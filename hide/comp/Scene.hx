@@ -411,7 +411,7 @@ class Scene extends hide.comp.Component implements h3d.IDrawable {
 		var relPath = StringTools.startsWith(path, ide.resourceDir) ? path.substr(ide.resourceDir.length+1) : path;
 		var e;
 		if( reload )
-			@:privateAccess hxd.res.Loader.currentInstance.cache.remove(path);
+			hxd.res.Loader.currentInstance.fs.dispose();
 		if( ide.isDebugger )
 			e = hxd.res.Loader.currentInstance.load(relPath);
 		else
