@@ -1361,7 +1361,7 @@ class Cell {
 		new Element('<p>...</p>').css("margin", "0px").css("text-align","center").appendTo(rootEl);
 
 		var content = new Element('
-		<div class="cdb-types">
+		<div class="cdb-types" z-index="200">
 			<select name="customType" id="dropdown-custom-type">
 			<option value="none">None</option>
 			${ [for (idx in 0...customType.cases.length) '<option value=${idx}>${customType.cases[idx].name}</option>'].join("") }

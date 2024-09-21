@@ -482,6 +482,7 @@
   border-width: 1px;
   border-color: #474747;
   cursor: pointer;
+  z-index: 200;
 }
 .cdb .cdb-sheet .cdb-types select {
   cursor: pointer;
