@@ -6,6 +6,7 @@ import js.Browser;
 // clicking outside of it. Usefull for medium size editors
 // that appears when clicking on an item
 class Popup extends Component {
+	var popup : Element;
 	var timer : haxe.Timer;
 	var isSearchable:Bool;
 
@@ -15,7 +16,7 @@ class Popup extends Component {
 
 	function onMouseUp(e : js.html.MouseEvent) {
 		var elem = new Element(originalTarget);
-		if (originalTarget != null && canCloseOnClickOutside() && onShouldCloseOnClick(e) && elem.closest(element).length == 0 && elem.closest(element).length == 0) {
+		if (originalTarget != null && canCloseOnClickOutside() && onShouldCloseOnClick(e) && elem.closest(popup).length == 0 && elem.closest(element).length == 0) {
 			close();
 		}
 		originalTarget = null;
@@ -23,46 +24,37 @@ class Popup extends Component {
 
 	var originalTarget : js.html.EventTarget;
 
-	public function new(?parent:Element, isSearchable = false) {
-        super(parent,new Element("<div>"));
-
-		element.attr("popover", "").addClass("popup");
+	public function new(?parent:Element, ?root:Element, isSearchable = false) {
+		if( root == null ) root = new Element("<div>");
+        super(parent,root);
 
 		element[0].addEventListener("dblclick", (e) -> {e.stopPropagation();});
 
 		this.isSearchable = isSearchable;
+		popup = new Element("<div>").addClass("popup");
 
 		if (isSearchable) {
 			var searchBar = new Element('<input type="text" class="search-bar" placeholder="Search ..."/>');
-			element.append(searchBar);
+			popup.append(searchBar);
 
 			searchBar.keyup((e) -> onSearchChanged(searchBar));
 		}
 
-		var body = parent.closest(".lm_content");
+		var body = root.closest(".lm_content");
 		if (body.length == 0) body = new Element("body");
+		body.append(popup);
 
-		// Browser.document.addEventListener("mousedown",onMouseDown);
-		// Browser.document.addEventListener("mouseup", onMouseUp);
+		Browser.document.addEventListener("mousedown",onMouseDown);
+		Browser.document.addEventListener("mouseup", onMouseUp);
 
 		timer = new haxe.Timer(500);
 		timer.run = function() {
-			if( parent.closest("body").length == 0 ) {
+			if( root.closest("body").length == 0 ) {
 				close();
 			}
 		};
 
-		untyped element.get(0).showPopover();
-		element.get(0).addEventListener("toggle", onToggle);
         reflow();
-	}
-
-	function onToggle(e: Dynamic) {
-		if (e.newState == "closed") {
-			timer.stop();
-			element.remove();
-			onClose();
-		}
 	}
 
 	function fixInputSelect() {
@@ -81,27 +73,30 @@ class Popup extends Component {
 	}
 
 	function reflow() {
-		var offset = element.parent().offset();
-		var popupHeight = element.get(0).offsetHeight;
-		var popupWidth = element.get(0).offsetWidth;
+		var offset = element.offset();
+		var popupHeight = popup.get(0).offsetHeight;
+		var popupWidth = popup.get(0).offsetWidth;
 
 		var clientHeight = Browser.document.documentElement.clientHeight;
 		var clientWidth = Browser.document.documentElement.clientWidth;
 
-		offset.top += element.parent().get(0).offsetHeight;
+		offset.top += element.get(0).offsetHeight;
 		offset.top = Math.min(offset.top,  clientHeight - popupHeight - 32);
 
 		//offset.left += element.get(0).offsetWidth;
 		offset.left = Math.min(offset.left,  clientWidth - popupWidth - 32);
 
-		element.offset(offset);
+		popup.offset(offset);
 	}
 
 	public function onSearchChanged(searchBar:Element):Void {}
 
 	public function close() {
-		untyped element.get(0).hidePopover();
-		onToggle({newState: "closed"});
+		timer.stop();
+		popup.remove();
+		Browser.document.removeEventListener("mousedown", onMouseDown);
+		Browser.document.removeEventListener("mouseup", onMouseUp);
+		onClose();
 	}
 
 	public dynamic function onClose() {

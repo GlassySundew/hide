@@ -55,15 +55,15 @@ enum SelectMode {
 class ViewportOverlaysPopup extends hide.comp.Popup {
 	var editor:SceneEditor;
 
-	public function new(?parent : Element, editor: SceneEditor) {
-		super(parent);
+	public function new(?parent : Element, ?root: Element, editor: SceneEditor) {
+		super(parent, root);
 		this.editor = editor;
 
-		element.append(new Element("<p>Viewport Overlays</p>"));
-		element.addClass("settings-popup");
-		element.css("max-width", "300px");
+		popup.append(new Element("<p>Viewport Overlays</p>"));
+		popup.addClass("settings-popup");
+		popup.css("max-width", "300px");
 
-		element.append(new Element('
+		popup.append(new Element('
 			<h2>Guides</h2>
 			<div class="form-grid" id="guidesGroup"></div>
 			<h2>Selection</h2>
@@ -101,7 +101,7 @@ class ViewportOverlaysPopup extends hide.comp.Popup {
 		}
 
 		{
-			var group = element.find("#guidesGroup");
+			var group = popup.find("#guidesGroup");
 			addButton("Grid", "th", "gridToggle", () -> editor.updateGrid()).appendTo(group);
 			addButton("Axis", "arrows", "axisToggle", () -> editor.updateBasis()).appendTo(group);
 			addButton("Joints", "share-alt", "jointsToggle", () -> editor.updateJointsVisibility()).appendTo(group);
@@ -132,14 +132,14 @@ class ViewportOverlaysPopup extends hide.comp.Popup {
 		}
 
 		{
-			var group = element.find("#selectionGroup");
+			var group = popup.find("#selectionGroup");
 			addButton("Gizmo", "arrows-alt", "showGizmo", () -> editor.updateGizmoVisibility()).appendTo(group);
 			addButton("Outline", "dot-circle-o", "showOutlines", () -> editor.updateOutlineVisibility()).appendTo(group);
 		}
 
 
 		{
-			var group = element.find("#debug");
+			var group = popup.find("#debug");
 			var btn = addButton("Scene Info", "info-circle", "sceneInformationToggle", () -> editor.updateStatusTextVisibility()).appendTo(group);
 			addButton("Wireframe", "connectdevelop", "wireframeToggle", () -> editor.updateWireframe()).appendTo(group);
 			addButton("Disable Scene Render", "eye-slash", "tog-scene-render", () -> {}).appendTo(group);
@@ -150,7 +150,7 @@ class ViewportOverlaysPopup extends hide.comp.Popup {
 		}
 
 
-		var allIcons = element.find("#allIcons");
+		var allIcons = popup.find("#allIcons");
 		function refreshIconMenu() {
 			var visible = editor.ide.currentConfig.get("sceneeditor.iconVisibility");
 			if (visible) {
@@ -161,7 +161,7 @@ class ViewportOverlaysPopup extends hide.comp.Popup {
 		}
 
 		{
-			var group = element.find("#showIconGroup");
+			var group = popup.find("#showIconGroup");
 			addButton("3D Icons", "image", "iconVisibility", () -> {refreshIconMenu(); editor.updateIconsVisibility();}).appendTo(group);
 
 			allIcons.css("margin-left", "3px");
@@ -199,7 +199,7 @@ class ViewportOverlaysPopup extends hide.comp.Popup {
 
 
 		// {
-		// 	var input = element.find("#showGrid");
+		// 	var input = popup.find("#showGrid");
 		// 	input.get(0).toggleAttribute("checked", editor.showGrid);
 		// 	input.click(function(e){
 		// 		if (e.button == 0) {
@@ -212,7 +212,7 @@ class ViewportOverlaysPopup extends hide.comp.Popup {
 		// }
 
 		// {
-		// 	var input = element.find("#showAxis");
+		// 	var input = popup.find("#showAxis");
 		// 	input.prop("checked", editor.showBasis);
 		// 	input.on("change", function(){
 		// 		editor.showBasis = input.prop("checked");
@@ -225,15 +225,15 @@ class ViewportOverlaysPopup extends hide.comp.Popup {
 class SnapSettingsPopup extends hide.comp.Popup {
 	var editor : SceneEditor;
 
-	public function new(?parent : Element, editor: SceneEditor) {
-		super(parent);
+	public function new(?parent : Element, ?root : Element, editor: SceneEditor) {
+		super(parent, root);
 		this.editor = editor;
 
-		element.append(new Element("<p>Snap Settings</p>"));
-		element.addClass("settings-popup");
-		element.css("max-width", "300px");
+		popup.append(new Element("<p>Snap Settings</p>"));
+		popup.addClass("settings-popup");
+		popup.css("max-width", "300px");
 
-		var form_div = new Element("<div>").addClass("form-grid").appendTo(element);
+		var form_div = new Element("<div>").addClass("form-grid").appendTo(popup);
 
 		var editMode : hrt.tools.Gizmo.EditMode = @:privateAccess editor.gizmo.editMode;
 
@@ -478,18 +478,18 @@ class ViewModePopup extends hide.comp.Popup {
 	var renderer:h3d.scene.pbr.Renderer;
 	var editor : SceneEditor;
 
-	public function new(?parent:Element, engineRenderer:h3d.scene.pbr.Renderer, editor: SceneEditor) {
-		super(parent);
+	public function new(?parent:Element, ?root:Element, engineRenderer:h3d.scene.pbr.Renderer, editor: SceneEditor) {
+		super(parent, root);
 		this.renderer = engineRenderer;
 		this.editor = editor;
 
-		element.addClass("settings-popup");
-		element.css("max-width", "300px");
+		popup.addClass("settings-popup");
+		popup.css("max-width", "300px");
 
 		if (renderer == null)
 			return;
 
-		var form_div = new Element("<div>").addClass("form-grid").appendTo(element);
+		var form_div = new Element("<div>").addClass("form-grid").appendTo(popup);
 
 		var slides = @:privateAccess renderer.slides;
 		for (v in viewFilter) {
@@ -616,15 +616,15 @@ class ViewModePopup extends hide.comp.Popup {
 class IconVisibilityPopup extends hide.comp.Popup {
     var editor : SceneEditor;
 
-    public function new(?parent : Element, editor: SceneEditor) {
-        super(parent);
+    public function new(?parent : Element, ?root : Element, editor: SceneEditor) {
+        super(parent, root);
         this.editor = editor;
 
-        element.append(new Element("<p>Icon Visibility</p>"));
-        element.addClass("settings-popup");
-        element.css("max-width", "300px");
+        popup.append(new Element("<p>Icon Visibility</p>"));
+        popup.addClass("settings-popup");
+        popup.css("max-width", "300px");
 
-        var form_div = new Element("<div>").addClass("form-grid").appendTo(element);
+        var form_div = new Element("<div>").addClass("form-grid").appendTo(popup);
 
         var editMode : hrt.tools.Gizmo.EditMode = @:privateAccess editor.gizmo.editMode;
 
@@ -647,15 +647,15 @@ class IconVisibilityPopup extends hide.comp.Popup {
 class HelpPopup extends hide.comp.Popup {
 	var editor : SceneEditor;
 
-	public function new(?parent : Element, editor: SceneEditor, ?shortcuts: Array<{name:String, shortcut:String}>) {
-        super(parent);
+	public function new(?parent : Element, ?root : Element, editor: SceneEditor, ?shortcuts: Array<{name:String, shortcut:String}>) {
+        super(parent, root);
         this.editor = editor;
 
-        element.append(new Element("<p>Shortcuts</p>"));
-        element.addClass("settings-popup");
-        element.css("max-width", "300px");
+        popup.append(new Element("<p>Shortcuts</p>"));
+        popup.addClass("settings-popup");
+        popup.css("max-width", "300px");
 
-		var form_div = new Element("<div>").addClass("form-grid").appendTo(element);
+		var form_div = new Element("<div>").addClass("form-grid").appendTo(popup);
 
 		if (shortcuts != null) {
 			for (shortcut in shortcuts) {
@@ -681,15 +681,15 @@ class RenderPropsPopup extends Popup {
 	var editor:SceneEditor;
 	var view: hide.view.FileView;
 
-	public function new(?parent:Element, view:hide.view.FileView, editor:SceneEditor, isSearchable = false, canChangeCurrRp = false) {
-		super(parent, isSearchable);
+	public function new(?parent:Element, ?root:Element, view:hide.view.FileView, editor:SceneEditor, isSearchable = false, canChangeCurrRp = false) {
+		super(parent, root, isSearchable);
 		this.editor = editor;
 		this.view = view;
 
-		element.addClass("settings-popup");
-		element.css("max-width", "300px");
+		popup.addClass("settings-popup");
+		popup.css("max-width", "300px");
 
-		var form_div = new Element("<div>").addClass("form-grid").appendTo(element);
+		var form_div = new Element("<div>").addClass("form-grid").appendTo(popup);
 		var lastRenderProps:hrt.prefab.RenderProps = null;
 		var currentRenderProps = @:privateAccess editor.getAllWithRefs(@:privateAccess editor.sceneData, hrt.prefab.RenderProps);
 		for (r in currentRenderProps)
@@ -713,7 +713,7 @@ class RenderPropsPopup extends Popup {
 			tmpView = cast Std.downcast(view, hide.view.FXEditor);
 
 		if (tmpView != null) {
-			var rpEditionEl = new Element('<div><input type="checkbox" id="cb-rp-edition"/><label>Edit render props</label></div>').insertBefore(element.children().first());
+			var rpEditionEl = new Element('<div><input type="checkbox" id="cb-rp-edition"/><label>Edit render props</label></div>').insertBefore(popup.children().first());
 			var cb = rpEditionEl.find('input');
 			cb.prop('checked', Ide.inst.currentConfig.get("sceneeditor.renderprops.edit", false));
 			cb.on('change', function(){
@@ -771,7 +771,7 @@ class RenderPropsPopup extends Popup {
 
 	override function onSearchChanged(searchBar:Element) {
 		var search = searchBar.val();
-		var form_div = element.find(".form-grid");
+		var form_div = popup.find(".form-grid");
 
 		form_div.find("label").remove();
 		form_div.find('input[type=radio]').remove();

@@ -53,7 +53,7 @@ class GradientBox extends Component {
 
         element.click(function(e) {
             if (gradientEditor == null) {
-                gradientEditor = new GradientEditor(element);
+                gradientEditor = new GradientEditor(null, element);
                 gradientEditor.value = value;
                 gradientEditor.onChange = function(isDragging : Bool) {
                     value = gradientEditor.value;
@@ -63,8 +63,8 @@ class GradientBox extends Component {
                     gradientEditor = null;
                 }
             } else {
-                //gradientEditor.close();
-                //gradientEditor = null;
+                gradientEditor.close();
+                gradientEditor = null;
             }
         });
 
@@ -137,17 +137,17 @@ class GradientEditor extends Popup {
         return innerValue;
     }
 
-    public function new(?parent : Element, editGradientSettings: Bool = true) {
-        super(parent);
+    public function new(?parent : Element, ?root : Element, editGradientSettings: Bool = true) {
+        super(parent, root);
 
-        element.addClass("gradient-editor");
+        popup.addClass("gradient-editor");
 
         // Allows the popup to become focusable,
         // allowing the handling of keyboard events
-        element.attr("tabindex","-1");
-        element.focus();
+        popup.attr("tabindex","-1");
+        popup.focus();
 
-		element.on("keydown", function (e : KeyboardEvent) {
+		popup.on("keydown", function (e : KeyboardEvent) {
             if (e.key == "Delete" || e.key =="Backspace") {
                 if (selectedStop != null) {
                     removeStop(selectedStop);
@@ -167,7 +167,7 @@ class GradientEditor extends Popup {
             }
         });
 
-        gradientView = new GradientView(element);
+        gradientView = new GradientView(popup);
         gradientView.element.height(90).width(256);
 
         var elem = gradientView.element.get(0);
@@ -203,7 +203,7 @@ class GradientEditor extends Popup {
         </filter>
         </defs>');
 
-        var editor = new Element("<div>").addClass("editor").appendTo(element);
+        var editor = new Element("<div>").addClass("editor").appendTo(popup);
         stopEditor = new Element("<div>").addClass("stop-editor").appendTo(editor);
 
         stopLabel = new Element("<p>").appendTo(stopEditor);

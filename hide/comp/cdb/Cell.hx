@@ -1028,7 +1028,7 @@ class Cell {
 				preview = elem.find(".color");
 			}
 			#if js
-			var cb = new ColorPicker(false, preview);
+			var cb = new ColorPicker(false, elem, preview);
 			cb.value = currentValue;
 			cb.onChange = function(drag) {
 				preview.css({backgroundColor : '#'+StringTools.hex(cb.value,6) });
@@ -1187,7 +1187,7 @@ class Cell {
 			#if js
 			var e = new Element(elementHtml);
 			e.addClass("edit");
-			var gradientEditor = new GradientEditor(e , false);
+			var gradientEditor = new GradientEditor(null,e , false);
 
 			var gradient = hrt.impl.Gradient.getDefaultGradientData();
 			if (value != null && value.colors != null && value.colors.length >= 1) {
@@ -1215,7 +1215,7 @@ class Cell {
 		case TCurve:
 			var e = new Element(elementHtml);
 			e.addClass("edit");
-			var curveEditor = new hide.comp.CurveEditor.CurvePopup(e, editor.undo);
+			var curveEditor = new hide.comp.CurveEditor.CurvePopup(null, e, editor.undo);
 
 			var prefabCurve = new hrt.prefab.Curve(null, null);
 			var linear : Float = cast hrt.prefab.Curve.CurveKeyMode.Linear;

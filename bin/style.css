@@ -2752,7 +2752,6 @@ div.color-box {
   cursor: pointer;
 }
 div.popup {
-  inset: unset;
   background-color: #181818;
   border: 1px solid #242424;
   border-radius: 5px;
@@ -2843,7 +2842,6 @@ div.popup:focus {
 }
 div.color-picker {
   padding: 0;
-  text-align: left;
 }
 div.color-picker .vbox {
   display: flex;
