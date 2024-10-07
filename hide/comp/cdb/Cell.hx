@@ -1744,7 +1744,7 @@ class Cell {
 				}
 			}
 
-			if (ctValue.length == 0)
+			if ( ctValue != null && ctValue.length == 0)
 				ctValue = null;
 
 			if (depth == 0) {
