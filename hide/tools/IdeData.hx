@@ -2,7 +2,6 @@ package hide.tools;
 
 class IdeData {
 
-	public var currentConfig(get,never) : Config;
 	public var projectDir(get,never) : String;
 	public var resourceDir(get,never) : String;
 	public var appPath(get, null): String;
@@ -17,12 +16,6 @@ class IdeData {
 
 	var pakFile : hxd.fmt.pak.FileSystem;
 
-	public var config : {
-		global : Config,
-		project : Config,
-		user : Config,
-		current : Config,
-	};
 
 	// Default settings for HideGlobalConfig since we can't init values in a typedef
 	public var defaultIdeConfig : Map<String, Dynamic> = [
@@ -31,10 +24,19 @@ class IdeData {
 		"autoSavePrefab" => false,
 		"trackGpuAlloc" => false,
 		"cullingDistanceFactor" => 100,
+		"svnShowVersionedFiles" => true,
+		"svnShowModifiedFiles" => true,
 	];
 
+	public var currentConfig(get,never) : Config;
 	public var ideConfig(get, never) : hide.Config.HideGlobalConfig;
 	public var projectConfig(get, never) : hide.Config.HideProjectConfig;
+	public var config : {
+		global : Config, // Per user, for all projects
+		user : Config, // Per user, specific project
+		project : Config, // All users, specific project
+		current : Config, // Merge of all configs above
+	};
 
 	public function new() {
 	}
@@ -96,20 +98,27 @@ class IdeData {
 	function get_appPath() {
 		if( appPath != null )
 			return appPath;
+		var path = getAppPath();
+		if( path == null )
+			fatalError("Hide application path was not found");
+		return appPath = path;
+	}
+
+	static function getAppPath() {
 		var path = #if hl Sys.programPath() #else js.Node.process.argv[0] #end.split("\\").join("/").split("/");
 		path.pop();
 		var hidePath = path.join("/");
 		if( !sys.FileSystem.exists(hidePath + "/package.json") ) {
 			var prevPath = new haxe.io.Path(hidePath).dir;
 			if( sys.FileSystem.exists(prevPath + "/hide.js") )
-				return appPath = prevPath;
+				return prevPath;
 			// nwjs launch
 			var path = Sys.getCwd().split("\\").join("/");
 			if( sys.FileSystem.exists(path+"/hide.js") )
-				return appPath = path;
-			fatalError("Hide application path was not found");
+				return path;
+			return null;
 		}
-		return appPath = hidePath;
+		return hidePath;
 	}
 
 	function get_userStatePath() {

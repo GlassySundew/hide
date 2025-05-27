@@ -429,10 +429,12 @@ class Curve extends Prefab {
 				parameter.show();
 				selecta.empty();
 				var root = Std.downcast(getRoot(false), hrt.prefab.fx.FX);
-				for (p in root.parameters) {
-					selecta.append(new hide.Element('<option value="${p.name}">${p.name}</option>'));
+				if (root != null) {
+					for (p in root.parameters) {
+						selecta.append(new hide.Element('<option value="${p.name}">${p.name}</option>'));
+					}
+					selecta.val(blendParam);
 				}
-				selecta.val(blendParam);
 			}
 
 			var reference = props.find('#reference');
@@ -459,7 +461,8 @@ class Curve extends Prefab {
 				var root = getRoot(false);
 				select.append(new hide.Element('<option value="">None</option>'));
 				var flat = root.flatten(Curve);
-				for (param in Std.downcast(root, hrt.prefab.fx.FX).parameters) {
+				var parameters = Std.downcast(root, hrt.prefab.fx.FX)?.parameters ?? [];
+				for (param in parameters) {
 					var path = "$param." + param.name;
 					select.append(new hide.Element('<option value="${path}">Param: ${param.name}</option>'));
 				}
@@ -526,11 +529,9 @@ class Curve extends Prefab {
 				var prev = this.keys[i-1];
 				var next = this.keys[i];
 				switch (prev.mode) {
-					case Linear:
-						data += 'L ${next.time} ${next.value}';
 					case Constant:
 						data += 'H ${next.time} V ${next.value}';
-					case Aligned, Free:
+					case Aligned, Free, Linear:
 						{
 							var prevDt = prev.nextHandle?.dt ?? 0.0;
 							var prevDv = prev.nextHandle?.dv ?? 0.0;

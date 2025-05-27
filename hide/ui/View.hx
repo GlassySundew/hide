@@ -22,7 +22,14 @@ class View<T> extends hide.comp.Component {
 	var watches : Array<{ keep : Bool, path : String, callb : Void -> Void }> = [];
 	public var keys(get,null) : Keys;
 	public var state(default, null) : T;
-	public var undo(default, null) = new hide.ui.UndoHistory();
+	public var undo(get, null) = new hide.ui.UndoHistory();
+
+	function get_undo() : hide.ui.UndoHistory {
+		return undoStack[undoStack.length-1];
+	}
+
+	var undoStack: Array<UndoHistory> = [new hide.ui.UndoHistory()];
+
 	public var config(get, null) : Config;
 	public var viewClass(get, never) : String;
 	public var defaultOptions(get,never) : ViewOptions;
@@ -62,6 +69,7 @@ class View<T> extends hide.comp.Component {
 			keys = new Keys(null);
 			#if js
 			keys.register("view.fullScreen", function() fullScreen = !fullScreen);
+			keys.register("view.reopenLastClosedTab", function() ide.reopenLastClosedTab());
 			#end
 		}
 		return keys;
@@ -77,6 +85,29 @@ class View<T> extends hide.comp.Component {
 
 	function get_viewClass() {
 		return Type.getClassName(Type.getClass(this));
+	}
+
+	/**
+		Push a new "UndoStack", that will collect all the new undo.change until
+		popUndoStack is called
+	**/
+	public function pushUndoStack() {
+		undoStack.push(new UndoHistory());
+	}
+
+	/**
+		Pop the last pushUndoStack operation, creating a unique undo operation that contains all the changes were
+		recorded in the undo buffer if any were created
+	**/
+	public function popUndoStack() {
+		if (undoStack.length <= 1) {
+			throw "trying to pop while there is only one or less undoes on the stack";
+		}
+		var top = undoStack.pop();
+
+		@:privateAccess if (undo.undoElts.length > 0) {
+			undo.change(top.toElement());
+		}
 	}
 
 	#if !hl
@@ -195,7 +226,12 @@ class View<T> extends hide.comp.Component {
 				ide.fileWatcher.unregister(w.path, w.callb);
 				watches.remove(w);
 			}
+		undo.clear();
 		syncTitle();
+
+		// can happen on close all
+		if (element == null)
+			return;
 		element.empty();
 		element.off();
 		onDisplay();
@@ -218,7 +254,7 @@ class View<T> extends hide.comp.Component {
 	public function onResize() {
 	}
 
-	public function onDragDrop(items : Array<String>, isDrop : Bool) {
+	public function onDragDrop(items : Array<String>, isDrop : Bool, event: js.html.DragEvent) {
 		return false;
 	}
 
@@ -269,6 +305,7 @@ class View<T> extends hide.comp.Component {
 		}
 		element = null;
 		containerView.__view = null;
+		@:privateAccess ide.lastClosedTabStates.push(state);
 	}
 
 	function buildTabMenu() : Array<hide.comp.ContextMenu.MenuItem> {
@@ -301,8 +338,6 @@ class View<T> extends hide.comp.Component {
 	public static var viewClasses = new Map<String,{ name : String, cl : Class<View<Dynamic>>, options : ViewOptions }>();
 	public static function register<T>( cl : Class<View<T>>, ?options : ViewOptions ) {
 		var name = Type.getClassName(cl);
-		if( viewClasses.exists(name) )
-			return null;
 		if( options == null )
 			options = {}
 		if( options.position == null )

@@ -4,10 +4,9 @@ class SubFX extends Reference implements hrt.prefab.fx.Event.IEvent{
 
 	@:s public var time(default, set) : Float;
 	@:s public var loop(default, set) : Bool;
+	@:s public var duration : Float;
 
-	#if editor
 	var instance : hrt.prefab.fx.FX.FXAnimation;
-	#end
 
 	public var hidden:Bool = false;
 	public var lock:Bool = false;
@@ -20,9 +19,7 @@ class SubFX extends Reference implements hrt.prefab.fx.Event.IEvent{
 			if(fxanim != null) {
 				fxanim.startDelay = time;
 			    fxanim.loop = loop;
-				#if editor
 				instance = fxanim;
-				#end
 			}
 		}
 	}
@@ -35,12 +32,39 @@ class SubFX extends Reference implements hrt.prefab.fx.Event.IEvent{
 		return time = v;
 	}
 
+	public function getDuration() {
+		if (refInstance != null) {
+			var local = refInstance.findFirstLocal3d();
+			if (local == null)
+				return 0.0;
+			var fxAnim : hrt.prefab.fx.FX.FXAnimation = local.find(o -> Std.downcast(o, hrt.prefab.fx.FX.FXAnimation));
+			if (fxAnim != null) {
+				return fxAnim.duration;
+			}
+		}
+		return 0.0;
+	}
+
+	#if editor
+	public function setDuration(v) : Void {
+		duration = v;
+	}
+	#end
+
 	function set_loop(v) {
 		#if editor
 		if(instance != null)
 			instance.loop = v;
 		#end
 		return loop = v;
+	}
+
+	public function getEventPrefab() { return this; }
+
+	public function prepare() : Event.EventInstance {
+		return {
+			evt: this
+		};
 	}
 
 	#if editor
@@ -58,8 +82,6 @@ class SubFX extends Reference implements hrt.prefab.fx.Event.IEvent{
 		});
 		super.edit(ctx);
 	}
-
-	public function getEventPrefab() { return this; }
 
 	public function getDisplayInfo(ctx:hide.prefab.EditContext) {
 		var ref = Std.downcast(resolveRef(), FX);

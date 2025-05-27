@@ -35,6 +35,14 @@ class Shader extends Prefab {
 		if( shader == null || shaderDef == null )
 			return;
 		syncShaderVars(shader, shaderDef);
+
+		#if editor
+		if (propName == null)
+			return;
+		var rootFx = Std.downcast(getRoot(), hrt.prefab.fx.FX);
+		var fxAnim = Std.downcast(rootFx?.local3d, hrt.prefab.fx.FX.FXAnimation);
+		fxAnim?.updateCustomAnims(rootFx);
+		#end
 	}
 
 	function syncShaderVars( shader : hxsl.Shader, shaderDef : hxsl.SharedShader ) {
@@ -103,6 +111,18 @@ class Shader extends Prefab {
 		if (parent == null)
 			return;
 		var parent = parent;
+
+		// If we are at the root of a prefab, check if we are in a ref, and in that case
+		// get the ref parent as a parent
+		if (parent?.parent == null) {
+			var current = shared.parentPrefab?.parent;
+			while(current != null && current.parent == null) {
+				current = current.shared.parentPrefab?.parent;
+			}
+			if (current != null) {
+				parent = current;
+			}
+		}
 
 		if( Std.isOfType(parent, Material) ) {
 			var material : Material = cast parent;
@@ -183,8 +203,10 @@ class Shader extends Prefab {
 	#if editor
 
 	override function editorRemoveInstanceObjects() : Void {
-		shared.editor.queueRebuild(parent);
-		super.editorRemoveInstanceObjects();
+		if (shared?.editor != null) {
+			shared.editor.queueRebuild(parent);
+			super.editorRemoveInstanceObjects();
+		}
 	}
 
 	function getEditProps(shaderDef: hxsl.SharedShader) : Array<hrt.prefab.Props.PropDef> {

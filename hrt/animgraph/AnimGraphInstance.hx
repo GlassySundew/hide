@@ -1,12 +1,14 @@
 package hrt.animgraph;
 using Lambda;
-using hrt.tools.MapUtils;
+import hrt.tools.MapUtils;
 class AnimGraphAnimatedObject extends h3d.anim.Animation.AnimatedObject {
 	public var id : Int;
+	public var matrix : h3d.Matrix;
 
 	public function new (name, id) {
 		super(name);
 		this.id = id;
+		matrix = new h3d.Matrix();
 	}
 }
 
@@ -16,7 +18,6 @@ typedef AnimResolver = (instance: AnimGraphInstance, target: h3d.scene.Object, p
 @:access(hrt.animgraph.Node)
 class AnimGraphInstance extends h3d.anim.Animation {
 	var rootNode : hrt.animgraph.nodes.AnimNode;
-	var workMatrix = new h3d.Matrix();
 
 	var boneMap: Map<String, Int> = [];
 	var parameterMap: Map<String, hrt.animgraph.AnimGraph.Parameter> = [];
@@ -27,25 +28,29 @@ class AnimGraphInstance extends h3d.anim.Animation {
 	var defaultPoseNode = new hrt.animgraph.nodes.DefaultPose();
 
 	var resolver : AnimResolver = null;
+	var modelCache: h3d.prim.ModelCache;
+
+	var tmpMatrix : h3d.Matrix = new h3d.Matrix();
 
 	#if editor
 	var editorSkipClone : Bool = false;
 	#end
 
-	static function fromAnimGraph(animGraph:AnimGraph, outputNode: hrt.animgraph.nodes.AnimNode = null, resolver: AnimResolver) : AnimGraphInstance {
+	static function fromAnimGraph(animGraph:AnimGraph, outputNode: hrt.animgraph.nodes.AnimNode = null, modelCache: h3d.prim.ModelCache = null, resolver: AnimResolver) : AnimGraphInstance {
 		outputNode ??= cast animGraph.nodes.find((node) -> Std.downcast(node, hrt.animgraph.nodes.Output) != null);
 		if (outputNode == null)
 			throw "Animgraph has no output node";
 
-		var inst = new AnimGraphInstance(outputNode, resolver, animGraph.name, 1000, 1/60.0);
+		var inst = new AnimGraphInstance(outputNode, modelCache, resolver, animGraph.name, 1000, 1/60.0);
 		return inst;
 	}
 
-	public function new(rootNode: hrt.animgraph.nodes.AnimNode, resolver: AnimResolver = null, name: String, framesCount: Int, sampling: Float) {
+	public function new(rootNode: hrt.animgraph.nodes.AnimNode, modelCache: h3d.prim.ModelCache = null, resolver: AnimResolver = null, name: String, framesCount: Int, sampling: Float) {
 		// Todo : Define a true length for the animation OR make so animations can have an undefined length
 		super(name, framesCount, sampling);
 		this.rootNode = rootNode;
 		this.resolver = resolver ?? defaultResolver;
+		this.modelCache = modelCache ?? new h3d.prim.ModelCache();
 		defaultPoseNode = new hrt.animgraph.nodes.DefaultPose();
 	}
 
@@ -77,6 +82,17 @@ class AnimGraphInstance extends h3d.anim.Animation {
 		}
 	}
 
+	/**
+		Force nodes in the graph that smooth their input over time to match the
+		current value of their parameters
+	**/
+	public function resetSmoothedValues() {
+		tickRec(rootNode, 0.0);
+		map(rootNode, (node) -> {
+			node.resetSmoothedValues();
+		});
+	}
+
 	override function clone(?target: h3d.anim.Animation) : h3d.anim.Animation {
 		#if editor
 		if (editorSkipClone) {
@@ -98,7 +114,7 @@ class AnimGraphInstance extends h3d.anim.Animation {
 		if (clonedParam != null) {
 			var nodeParam : hrt.animgraph.nodes.FloatParameter = cast node;
 			if (nodeParam.parameter != null) {
-				clonedParam.parameter = inst.parameterMap.getOrPut(nodeParam.parameter.name, {
+				clonedParam.parameter = MapUtils.getOrPut(inst.parameterMap, nodeParam.parameter.name, {
 					var newParam = new hrt.animgraph.AnimGraph.Parameter();
 					@:privateAccess newParam.copyFromOther(nodeParam.parameter);
 					newParam.runtimeValue = nodeParam.parameter.defaultValue;
@@ -125,7 +141,22 @@ class AnimGraphInstance extends h3d.anim.Animation {
 		map(rootNode, updateNodeInputs);
 
 		boneMap = rootNode.getBones(ctx);
+		rootNode.onEvent = onEventHandler;
+
+		map(rootNode, (node) -> {
+			var animNode =	Std.downcast(node, hrt.animgraph.nodes.AnimNode);
+			if (animNode != null) {
+				animNode.setupAnimEvents();
+			}
+		});
+
 		return boneMap;
+	}
+
+	function onEventHandler(name: String) {
+		if (onEvent != null) {
+			onEvent(name);
+		}
 	}
 
 	override function bind(base:h3d.scene.Object) {
@@ -135,6 +166,7 @@ class AnimGraphInstance extends h3d.anim.Animation {
 		var ctx = new hrt.animgraph.nodes.AnimNode.GetBoneContext();
 		ctx.targetObject = base;
 		ctx.resolver = resolver.bind(this, base);
+		ctx.modelCache = this.modelCache;
 
 		var bones = getBones(ctx);
 		if (bones != null) {
@@ -150,26 +182,29 @@ class AnimGraphInstance extends h3d.anim.Animation {
 			return;
 		for (obj in objects) {
 			var obj : AnimGraphAnimatedObject = cast obj;
+			var workMatrix = obj.matrix;
 			workMatrix.identity();
 			syncCtx.reset(obj);
 
 			rootNode.getBoneTransform(obj.id, workMatrix, syncCtx);
 
+
+
+			if (!decompose) {
+				Tools.recomposeMatrix(workMatrix, tmpMatrix);
+				workMatrix.load(tmpMatrix);
+				// keep in case if we need the def matrix ???
+				// if (obj.targetSkin != null) {
+				// 	var def = obj.targetSkin.getSkinData().allJoints[obj.targetJoint].defMat;
+				// }
+			}
+
 			@:privateAccess
 			var targetMatrix = if (obj.targetSkin != null) {
 				obj.targetSkin.jointsUpdated = true;
-				obj.targetSkin.currentRelPose[obj.targetJoint] ??= new h3d.Matrix();
+				obj.targetSkin.jointsData[obj.targetJoint].currentRelPose = workMatrix;
 			} else {
-				obj.targetObject.defaultTransform ??= new h3d.Matrix();
-			}
-
-			if (!decompose) {
-				Tools.recomposeMatrix(workMatrix, targetMatrix);
-				if (obj.targetSkin != null) {
-					var def = obj.targetSkin.getSkinData().allJoints[obj.targetJoint].defMat;
-				}
-			} else {
-				targetMatrix.load(workMatrix);
+				obj.targetObject.defaultTransform = workMatrix;
 			}
 		}
 	}

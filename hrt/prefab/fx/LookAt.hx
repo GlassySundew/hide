@@ -39,12 +39,20 @@ class LookAtObject extends h3d.scene.Object {
 	}
 
 	override function calcAbsPos() {
-		if(target != null)
-			lookAtPos = target.getAbsPos().getPosition();
-		else {
-			if(getScene() == null || getScene().camera == null) return;
-			var cam = getScene().camera;
+		var scene = getScene();
+		var up : h3d.Vector;
+		if(target != null) {
+			var abs = target.getAbsPos();
+			lookAtPos = abs.getPosition();
+			up = abs.up();
+		} else {
+			if(scene == null || scene.camera == null) {
+				super.calcAbsPos();
+				return;
+			}
+			var cam = scene.camera;
 			lookAtPos.load(definition.faceTargetForward ? this.getAbsPos().getPosition() + -1 * (cam.target - cam.pos) : cam.pos);
+			up = cam.up;
 		}
 
 		super.calcAbsPos();
@@ -83,7 +91,7 @@ class LookAtObject extends h3d.scene.Object {
 			super.calcAbsPos();
 
 			if (definition.constantScreenSize) {
-				var v = absPos.getPosition() - getScene().camera.pos;
+				var v = absPos.getPosition() - scene.camera.pos;
 				var scaleFactor = v.length();
 				absPos._11 *= scaleFactor;
 				absPos._12 *= scaleFactor;
@@ -102,11 +110,11 @@ class LookAtObject extends h3d.scene.Object {
 			var scale = tmpMat.getScale();
 
 			if (definition.constantScreenSize) {
-				var v = absPos.getPosition() - getScene().camera.pos;
+				var v = absPos.getPosition() - scene.camera.pos;
 				scale *= v.length();
 			}
 
-			qRot.initDirection(deltaVec);
+			qRot.initDirection(deltaVec, up);
 			qRot.toMatrix(absPos);
 			absPos._11 *= scale.x;
 			absPos._12 *= scale.x;
@@ -140,7 +148,9 @@ class LookAt extends Object3D {
 	}
 
 	override function makeObject(parent3d:h3d.scene.Object):h3d.scene.Object {
-		return new LookAtObject(parent3d, this);
+		var obj = new LookAtObject(parent3d, this);
+		obj.name = this.name;
+		return obj;
 	}
 
 	#if editor

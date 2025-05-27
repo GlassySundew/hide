@@ -77,7 +77,7 @@ class Cell {
 			root.classList.add("t_loc");
 
 		elementHtml.addEventListener("click", function(e) {
-			editor.cursor.clickCell(this, e.shiftKey);
+			editor.cursor.clickCell(this, e.shiftKey, e.ctrlKey);
 			e.stopPropagation();
 		});
 
@@ -401,7 +401,7 @@ class Cell {
 				!sheet.duplicateIds.exists(id) ? val(v) : html('<span class="error">#DUP($v)</span>');
 			}
 		case TString if( c.kind == Script ):  // wrap content in div because td cannot have max-height
-			v == "" ? val(" ") : html('<div class="script">${colorizeScript(c,v, sheet.idCol == null ? null : Reflect.field(obj, sheet.idCol.name))}</div>');
+			v == "" ? val(" ") : html('<div class="script">${colorizeScript(c,v,line.getRootLine().getId())}</div>');
 		case TString, TLayer(_), TGuid:
 			v == "" ? val(" ") : html(spacesToNBSP(StringTools.htmlEscape(v).split("\n").join("<br/>")));
 		case TRef(sname):
@@ -785,7 +785,9 @@ class Cell {
 
 	public function focus() {
 		editor.focus();
-		editor.cursor.set(table, this.columnIndex, this.line.index);
+		var x = table.displayMode == Properties ? 0 : columnIndex;
+		var y = line.index;
+		editor.cursor.set(table, x, y, [{ x1: x, y1: y, x2: x, y2: y, origin: {x: x, y: y} }]);
 	}
 
 	function getEnumValueDoc(v: String) {
@@ -893,7 +895,7 @@ class Cell {
 				case K.TAB:
 					closeEdit();
 					e.preventDefault();
-					editor.cursor.move(e.shiftKey ? -1 : 1, 0, false, false, true);
+					editor.cursor.move(e.shiftKey ? -1 : 1, 0, false, false, false, true);
 					var c = editor.cursor.getCell();
 							if (c != this && c != null)
 								c.edit();
@@ -1006,7 +1008,7 @@ class Cell {
 					return;
 				case K.TAB:
 					d.filterInput.blur();
-					editor.cursor.move(e.shiftKey? -1:1, 0, false, false, true);
+					editor.cursor.move(e.shiftKey? -1:1, 0, false, false, false, true);
 					var c = editor.cursor.getCell();
 					if( c != this ) c.edit();
 					e.preventDefault();
@@ -1042,7 +1044,7 @@ class Cell {
 					return;
 				case K.TAB:
 					d.filterInput.blur();
-					editor.cursor.move(e.shiftKey? -1:1, 0, false, false, true);
+					editor.cursor.move(e.shiftKey? -1:1, 0, false, false, false, true);
 					var c = editor.cursor.getCell();
 					if( c != this ) c.edit();
 					e.preventDefault();
@@ -1249,6 +1251,7 @@ class Cell {
 			}
 			editor.gradientEditor.anchor = e;
 			editor.gradientEditor.open();
+			editor.gradientEditor.element.focus();
 
 			var gradient = hrt.impl.Gradient.getDefaultGradientData();
 			if (value != null && value.colors != null && value.colors.length >= 1) {
@@ -1274,8 +1277,6 @@ class Cell {
 					refresh();
 					focus();
 				}
-
-
 			}
 
 			var customPreviews : Array<hide.comp.GradientEditor.PreviewSettings> = editor.config.get("cdb.gradientCustomPreviews");
@@ -1385,7 +1386,7 @@ class Cell {
 
 	function setRawValue( str : Dynamic ) {
 		var newValue : Dynamic;
-		if( Std.isOfType(str,String) ) {
+		if ( !column.type.match(TFloat) && Std.isOfType(str,String) ) {
 			newValue = try editor.base.parseValue(column.type, str, false) catch( e : Dynamic ) return;
 		} else
 			newValue = str;
@@ -1427,6 +1428,15 @@ class Cell {
 			if( change )
 				editor.refresh();
 			closeEdit();
+		case TFloat:
+			var interp = new hscript.Interp();
+			@:privateAccess interp.initOps();
+			interp.variables.set("Math", Math);
+
+			var parser = new hscript.Parser();
+			var expr = parser.parseString(str);
+			var res = interp.execute(expr);
+			setValue(res);
 		default:
 			setValue(newValue);
 		}
@@ -1468,95 +1478,6 @@ class Cell {
 		</div>');
 
 		content.appendTo(parentEl);
-
-		// Manage keyboard flow
-		content.keydown(function(e){
-			var focused = content.find(':focus');
-
-			if (e.altKey || e.shiftKey)
-				return;
-
-			switch (e.keyCode) {
-				case hxd.Key.ENTER:
-					if (focused.is('div'))
-						focused.trigger('click');
-
-					if (focused.is('input')) {
-						if (focused.is('input[type="checkbox"]'))
-							focused.prop('checked', !focused.is(':checked'));
-						else if (focused.prop('readonly'))
-							focused.prop('readonly', false);
-						else
-							focused.prop('readonly', true);
-					}
-
-					if (focused.is('select')) {
-
-					}
-
-					e.stopPropagation();
-					e.preventDefault();
-
-				case hxd.Key.ESCAPE:
-					if (focused.is('input') && !focused.is('input[type="checkbox"]') && !focused.prop('readonly')) {
-						focused.prop('readonly', true);
-
-						e.stopPropagation();
-						return;
-					}
-
-					rootEl.trigger('click');
-					e.stopPropagation();
-					e.preventDefault();
-
-				case hxd.Key.RIGHT:
-					if (focused.is('input') && !focused.prop('readonly') && !focused.is('input[type="checkbox"]')) {
-						e.stopPropagation();
-						return;
-					}
-
-					var s = content.children('select').first();
-					var p = content.find('#parameters').children('.value');
-
-					focused.blur();
-
-					if (focused.is(s))
-						p.first().focus();
-					else if (focused.is(p.last()))
-						s.focus();
-					else
-						p.eq(p.index(focused) + 1).focus();
-					e.stopPropagation();
-					e.preventDefault();
-
-				case hxd.Key.LEFT:
-					if (focused.is('input') && !focused.prop('readonly') && !focused.is('input[type="checkbox"]')) {
-						e.stopPropagation();
-						return;
-					}
-
-					var s = content.children('select').first();
-					var p = content.find('#parameters').children('.value');
-
-					focused.blur();
-
-					if (focused.is(s))
-						p.last().focus();
-					else if (focused.is(p.first()))
-						s.focus();
-					else
-						p.eq(p.index(focused) - 1).focus();
-					e.stopPropagation();
-					e.preventDefault();
-
-				case hxd.Key.UP, hxd.Key.DOWN:
-					e.stopPropagation();
-					e.preventDefault();
-
-				default:
-					trace("Not managed");
-			}
-		});
 
 		function getHtml(value : Dynamic, column : cdb.Data.Column) {
 			switch (column.type) {
@@ -1661,14 +1582,14 @@ class Cell {
 			}
 		}
 
-		var d = content.find("#dropdown-custom-type");
-		d.find("option").eq(ctValue == null || ctValue.length == 0 ? 0 : Std.int(ctValue[0] + 1)).attr("selected", "true");
+		var typeDropdown = content.find("#dropdown-custom-type");
+		typeDropdown.find("option").eq(ctValue == null || ctValue.length == 0 ? 0 : Std.int(ctValue[0] + 1)).attr("selected", "true");
 
 		var paramsContent = content.find("#parameters");
 
 		function buildParameters() {
 			paramsContent.empty();
-			var val = d.val();
+			var val = typeDropdown.val();
 			var selected = val != null ? customType.cases[content.find("#dropdown-custom-type").val()] : null;
 
 			if (selected != null && selected.args.length > 0) {
@@ -1689,20 +1610,23 @@ class Cell {
 
 			if (rightAnchor > 0)
 				content.css("right", '${depth == 0 ? rightAnchor - content.width() / 2.0 : rightAnchor}px');
+
+			var box = content.get(0).getBoundingClientRect();
+			if (box.right > js.Browser.window.innerWidth) {
+				content.css("right", '0px');
+			}
 		}
 
-		function closeCdbTypeEdit(applyModifications : Bool = true) {
-			// Close children cdb types editor before closing this one
-			var children = content.children().find(".cdb-type-string");
-			if (children.length > 0)
-				children.first().trigger("click");
+		function applyModifications(ctElement : Element) {
+			var d = ctElement.find("#dropdown-custom-type");
+			var paramsContent = ctElement.find("#parameters");
 
 			var newCtValue : Array<Dynamic> = null;
 
-			var selected = d.val() != null ? customType.cases[d.val()] : null;
+			var selected = typeDropdown.val() != null ? customType.cases[typeDropdown.val()] : null;
 			if (selected != null) {
 				newCtValue = [];
-				newCtValue.push(Std.int(d.val()));
+				newCtValue.push(Std.int(typeDropdown.val()));
 
 				if (selected.args != null && selected.args.length > 0) {
 					var paramsValues = paramsContent.find(".value");
@@ -1733,8 +1657,6 @@ class Cell {
 				}
 			}
 
-			parentEl.empty();
-
 			if (newCtValue != null) {
 				if (ctValue == null) ctValue = [];
 				for (idx in 0...ctValue.length) ctValue.pop();
@@ -1747,8 +1669,21 @@ class Cell {
 			if ( ctValue != null && ctValue.length == 0)
 				ctValue = null;
 
-			if (depth == 0) {
+			if (depth == 0)
 				this.setValue(ctValue);
+		}
+
+		function closeCdbTypeEdit() {
+			// Close children cdb types editor before closing this one
+			var children = content.children().find(".cdb-type-string");
+			if (children.length > 0)
+				children.first().trigger("click");
+
+			applyModifications(content);
+
+			parentEl.empty();
+
+			if (depth == 0) {
 				this.closeEdit();
 				this.focus();
 			}
@@ -1759,15 +1694,101 @@ class Cell {
 			}
 		}
 
+		// Manage keyboard flow
+		content.keydown(function(e){
+			var focused = content.find(':focus');
+
+			if (e.altKey || e.shiftKey)
+				return;
+
+			switch (e.keyCode) {
+				case hxd.Key.ENTER:
+					if (focused.is('div'))
+						focused.trigger('click');
+
+					if (focused.is('input')) {
+						if (focused.is('input[type="checkbox"]'))
+							focused.prop('checked', !focused.is(':checked'));
+						else if (focused.prop('readonly'))
+							focused.prop('readonly', false);
+						else
+							focused.prop('readonly', true);
+					}
+
+					applyModifications(content);
+					e.stopPropagation();
+					e.preventDefault();
+
+				case hxd.Key.ESCAPE:
+					if (focused.is('input') && !focused.is('input[type="checkbox"]') && !focused.prop('readonly')) {
+						focused.prop('readonly', true);
+
+						e.stopPropagation();
+						return;
+					}
+
+					rootEl.trigger('click');
+					e.stopPropagation();
+					e.preventDefault();
+
+				case hxd.Key.RIGHT:
+					if (focused.is('input') && !focused.prop('readonly') && !focused.is('input[type="checkbox"]')) {
+						e.stopPropagation();
+						return;
+					}
+
+					var s = content.children('select').first();
+					var p = content.find('#parameters').children('.value');
+
+					focused.blur();
+
+					if (focused.is(s))
+						p.first().focus();
+					else if (focused.is(p.last()))
+						s.focus();
+					else
+						p.eq(p.index(focused) + 1).focus();
+					e.stopPropagation();
+					e.preventDefault();
+
+				case hxd.Key.LEFT:
+					if (focused.is('input') && !focused.prop('readonly') && !focused.is('input[type="checkbox"]')) {
+						e.stopPropagation();
+						return;
+					}
+
+					var s = content.children('select').first();
+					var p = content.find('#parameters').children('.value');
+
+					focused.blur();
+
+					if (focused.is(s))
+						p.last().focus();
+					else if (focused.is(p.first()))
+						s.focus();
+					else
+						p.eq(p.index(focused) - 1).focus();
+					e.stopPropagation();
+					e.preventDefault();
+
+				case hxd.Key.UP, hxd.Key.DOWN:
+					e.stopPropagation();
+					e.preventDefault();
+
+				default:
+					trace("Not managed");
+			}
+		});
+
 		buildParameters();
 
-		d.on("change", function(e) {
+		typeDropdown.on("change", function(e) {
 			if (ctValue == null) ctValue = [];
 			for (idx in 0...ctValue.length) ctValue.pop();
 
-			var selected = d.val() == 0 ? null : customType.cases[d.val()];
+			var selected = typeDropdown.val() == 0 ? null : customType.cases[typeDropdown.val()];
 			if (selected != null) {
-				ctValue.push(d.val());
+				ctValue.push(typeDropdown.val());
 				for (idx in 0...selected.args.length) {
 					switch (selected.args[idx].type) {
 						case TId, TString, TRef(_):
@@ -1787,11 +1808,11 @@ class Cell {
 			buildParameters();
 		});
 
-		d.focus();
+		typeDropdown.focus();
 
 		// Prevent missclick to actually close the edit mode and
 		// open another one
-		rootEl.on("click", function(e, applyModifications) { closeCdbTypeEdit(applyModifications == null); e.stopPropagation(); });
+		rootEl.on("click", function(e, applyModifications) { closeCdbTypeEdit(); e.stopPropagation(); });
 		content.on("click", function(e) { e.stopPropagation(); });
 		content.on("dblclick", function(e) { e.stopPropagation(); });
 

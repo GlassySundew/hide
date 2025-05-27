@@ -9,7 +9,7 @@ import hrt.prefab.Curve;
 import hrt.prefab.fx.Event;
 import hide.view.CameraController.CamController;
 
-using hrt.tools.MapUtils;
+import hrt.tools.MapUtils;
 
 typedef PropTrackDef = {
 	name: String,
@@ -43,14 +43,9 @@ private class FXSceneEditor extends hide.comp.SceneEditor {
 	public var is2D : Bool = false;
 
 
-	public function new(view,  data) {
-		super(view, data);
+	public function new(view) {
+		super(view);
 		parent = cast view;
-	}
-
-	override function onSceneReady() {
-		super.onSceneReady();
-		parent.onSceneReady();
 	}
 
 	override function onPrefabChange(p: PrefabElement, ?pname: String) {
@@ -105,7 +100,7 @@ private class FXSceneEditor extends hide.comp.SceneEditor {
 		}
 	}
 
-	override function createDroppedElement(path:String, parent:PrefabElement): hrt.prefab.Prefab {
+	override function createDroppedElement(path:String, parent:PrefabElement, event: js.html.DragEvent): hrt.prefab.Prefab {
 		var type = hrt.prefab.Prefab.getPrefabType(path);
 		if(type == "fx") {
 			var relative = ide.makeRelative(path);
@@ -114,7 +109,7 @@ private class FXSceneEditor extends hide.comp.SceneEditor {
 			ref.name = new haxe.io.Path(relative).file;
 			return ref;
 		}
-		return super.createDroppedElement(path, parent);
+		return super.createDroppedElement(path, parent, event);
 	}
 
 	override function updateGrid() {
@@ -275,7 +270,7 @@ private class FXSceneEditor extends hide.comp.SceneEditor {
 
 		menu.sort(function(l1,l2) return Reflect.compare(l1.label,l2.label));
 
-		var events = allTypes.filter(i -> StringTools.endsWith(i.label, "Event"));
+		var events = allTypes.filter(i -> StringTools.contains(i.label, "Event"));
 		if(events.length > 0) {
 			menu.push({
 				label: "Events",
@@ -345,6 +340,8 @@ class FXEditor extends hide.view.FileView {
 	var xOffset = 0.;
 	var tlKeys: Array<{name:String, shortcut:String}> = [];
 
+	var fxprops : hide.comp.PropsEditor;
+
 	var pauseButton : hide.comp.Toolbar.ToolToggle;
 	@:isVar var currentTime(get, set) : Float;
 	var selectMin : Float;
@@ -355,8 +352,6 @@ class FXEditor extends hide.view.FileView {
 	var afterPanRefreshes : Array<Bool->Void> = [];
 	var statusText : h2d.Text;
 
-	var scriptEditor : hide.comp.ScriptEditor;
-	//var fxScriptParser : hrt.prefab.fx.FXScriptParser;
 	var cullingPreview : h3d.scene.Sphere;
 
     var viewModes : Array<String>;
@@ -393,8 +388,6 @@ class FXEditor extends hide.view.FileView {
 		var content = sys.io.File.getContent(getPath());
 		var json = haxe.Json.parse(content);
 
-
-		data = cast(PrefabElement.createFromDynamic(json), hrt.prefab.fx.BaseFX);
 		currentSign = ide.makeSignature(content);
 
 		element.html('
@@ -440,16 +433,13 @@ class FXEditor extends hide.view.FileView {
 						<div class="tab expand" name="Properties" icon="cog">
 							<div class="fx-props"></div>
 						</div>
-						<div class="tab expand" name="Script" icon="cog">
-							<div class="fx-script"></div>
-							<div class="fx-scriptParams"></div>
-						</div>
 					</div>
 				</div>
 			</div>');
 		tools = new hide.comp.Toolbar(null,element.find(".tools-buttons"));
 		var tabs = new hide.comp.Tabs(null,element.find(".tabs"));
-		sceneEditor = new FXSceneEditor(this, cast(data, hrt.prefab.Prefab));
+		sceneEditor = new FXSceneEditor(this);
+		sceneEditor.onSceneReady = onSceneReady;
 
 		for (callback in sceneReadyDelayed) {
 			sceneEditor.delayReady(callback);
@@ -495,7 +485,7 @@ class FXEditor extends hide.view.FileView {
 		helpButton.click(function(e) {
 			if (p == null) {
 				p = new hide.comp.SceneEditor.HelpPopup(helpButton, sceneEditor, tlKeys);
-				@:privateAccess p.element.css({'position':'absolute', 'left':'30px','top':'800px'});
+				@:privateAccess p.element.css({'position':'absolute', 'left':'${helpButton.offset().left + helpButton.width() * 2}px','top':'${helpButton.offset().top - p.element.height()}px'});
 				//p = open(el);
 				p.onClose = function() {
 					p = null;
@@ -515,41 +505,18 @@ class FXEditor extends hide.view.FileView {
 		element.find(".collapse-btn").click(function(e) {
 			sceneEditor.collapseTree();
 		});
-		var fxprops = new hide.comp.PropsEditor(undo,null,element.find(".fx-props"));
-		{
-			var edit = new FXEditContext(this);
-			edit.properties = fxprops;
-			edit.scene = sceneEditor.scene;
-			edit.cleanups = [];
-			cast(data, hrt.prefab.Prefab).edit(edit);
-		}
+		fxprops = new hide.comp.PropsEditor(undo,null,element.find(".fx-props"));
+
 
 		if (is2D) {
 			sceneEditor.camera2D = true;
 		}
-
-		var scriptElem = element.find(".fx-script");
-		scriptEditor = new hide.comp.ScriptEditor(data.scriptCode, null, scriptElem, scriptElem);
-		function onSaveScript() {
-			data.scriptCode = scriptEditor.code;
-			save();
-			skipNextChange = true;
-			modified = false;
-		}
-		scriptEditor.onSave = onSaveScript;
-		//fxScriptParser = new hrt.prefab.fx.FXScriptParser();
-		data.scriptCode = scriptEditor.code;
 
 		keys.register("playPause", function() { pauseButton.toggle(!pauseButton.isDown()); });
 
 		currentVersion = undo.currentID;
 		sceneEditor.tree.element.addClass("small");
 		sceneEditor.renderPropsTree.element.addClass("small");
-
-		selectMin = 0.0;
-		selectMax = 0.0;
-		previewMin = 0.0;
-		previewMax = data.duration == 0 ? 5000 : data.duration;
 
 		var rpEditionvisible = Ide.inst.currentConfig.get("sceneeditor.renderprops.edit", false);
 		setRenderPropsEditionVisibility(rpEditionvisible);
@@ -583,6 +550,27 @@ class FXEditor extends hide.view.FileView {
 		setRenderPropsEditionVisibility(Ide.inst.currentConfig.get("sceneeditor.renderprops.edit", false));
 	}
 	public function onSceneReady() {
+		data = cast(hxd.res.Loader.currentInstance.load(state.path).toPrefab().load().clone(), hrt.prefab.fx.BaseFX);
+		if (data == null) {
+			throw "Prefab is not a FX";
+			return;
+		}
+
+		sceneEditor.setPrefab(cast data);
+
+		selectMin = 0.0;
+		selectMax = 0.0;
+		previewMin = 0.0;
+		previewMax = data.duration == 0 ? 5000 : data.duration;
+
+		{
+			var edit = new FXEditContext(this);
+			edit.properties = fxprops;
+			edit.scene = sceneEditor.scene;
+			edit.cleanups = [];
+			cast(data, hrt.prefab.Prefab).edit(edit);
+		}
+
 		var axis = new h3d.scene.Graphics(scene.s3d);
 		axis.z = 0.001;
 		axis.lineStyle(2,0xFF0000); axis.lineTo(1,0,0);
@@ -614,6 +602,7 @@ class FXEditor extends hide.view.FileView {
 		toolsDefs.push({id: "", title : "", icon : "", type : Separator});
 
 		toolsDefs.push({id: "localTransformsToggle", title : "Local transforms", icon : "compass", type : Toggle((v) -> sceneEditor.localTransform = v)});
+		toolsDefs.push({id: "selfOnlyTransformsToggle", title : "Self only transforms", icon : "map-pin", type : Toggle((v) -> sceneEditor.selfOnlyTransform = v)});
 
 		toolsDefs.push({id: "", title : "", icon : "", type : Separator});
 
@@ -666,6 +655,8 @@ class FXEditor extends hide.view.FileView {
 
 		statusText = new h2d.Text(hxd.res.DefaultFont.get(), scene.s2d);
 		statusText.setPosition(5, 5);
+
+		rebuildAnimPanel();
 	}
 
 	function onPrefabChange(p: PrefabElement, ?pname: String) {
@@ -748,12 +739,9 @@ class FXEditor extends hide.view.FileView {
 			data.refreshObjectAnims();
 		}
 
-		if(pname == "time" || pname == "loop" || pname == "animation" || pname == "blendMode") {
+		if(pname == "name" || pname == "time" || pname == "loop" || pname == "animation" || pname == "blendMode" || pname == "duration") {
 			afterPan(false);
 			data.refreshObjectAnims();
-		}
-
-		if (pname == "loop") {
 			rebuildAnimPanel();
 		}
 
@@ -769,11 +757,13 @@ class FXEditor extends hide.view.FileView {
 		}
 	}
 
-	override function onDragDrop(items : Array<String>, isDrop : Bool) {
-		return sceneEditor.onDragDrop(items,isDrop);
+	override function onDragDrop(items : Array<String>, isDrop : Bool, event: js.html.DragEvent) {
+		return sceneEditor.onDragDrop(items,isDrop, event);
 	}
 
 	function onSelect(elts : Array<PrefabElement>) {
+		if (skipRebuildPannel > 0)
+			return;
 		rebuildAnimPanel();
 	}
 
@@ -789,6 +779,7 @@ class FXEditor extends hide.view.FileView {
 		}
 	}
 
+	var skipRebuildPannel = 0;
 	function addCurvesToCurveEditor(curves: Array<Curve>, events: Array<Dynamic>){
 		var rightPanel = element.find(".right-fx-animpanel").first();
 		rightPanel.empty();
@@ -799,6 +790,11 @@ class FXEditor extends hide.view.FileView {
 			previousTime = @:privateAccess this.curveEditor.currentTime;
 
 		this.curveEditor = new hide.comp.CurveEditor(this.undo, rightPanel);
+		this.curveEditor.onRefreshProps = () -> {
+			skipRebuildPannel++;
+			@:privateAccess sceneEditor.selectElements(sceneEditor.selectedPrefabs, NoHistory);
+			skipRebuildPannel--;
+		}
 
 		var overviewEditor = new hide.comp.CurveEditor.OverviewEditor(rightPanel, this.curveEditor);
 		var eventEditor = new hide.comp.CurveEditor.EventsEditor(rightPanel, this, this.curveEditor);
@@ -905,6 +901,9 @@ class FXEditor extends hide.view.FileView {
 		var toHiddenList : Array<{ parentEl: Element, elements: Array<Dynamic> }> = [];
 
 		var leftPanel = element.find(".left-fx-animpanel").first();
+
+		var toolbar = new Element('<fancy-toolbar><fancy-button>View<div class="ico ico-chevron-down"></div></fancy-button></fancy-toolbar>');
+		new hide.comp.Button(toolbar, null, "View", {});
 
 		function drawSection(parent : Element, section: Section, depth: Int) {
 
@@ -1074,16 +1073,12 @@ class FXEditor extends hide.view.FileView {
 			}
 
 			var events: Array<IEvent> = [];
-			for (e in section.root.flatten(Event)) {
-				events.push(e);
-				allElements.push(e);
-			}
-			for (e in section.root.flatten(hrt.prefab.fx.SubFX)) {
-				events.push(e);
-				allElements.push(e);
+			for (e in section.root.findAll(o -> Std.isOfType(o, IEvent))) {
+				events.push(cast (e, IEvent));
+				allElements.push(cast (e, IEvent));
 			}
 
-			if (section.root is Event || section.root is hrt.prefab.fx.SubFX) {
+			if (section.root is IEvent) {
 				events.push(cast section.root);
 				allElements.push(cast section.root);
 			}
@@ -1254,6 +1249,9 @@ class FXEditor extends hide.view.FileView {
 	}
 
 	function rebuildAnimPanel() {
+		if (@:privateAccess !sceneEditor.ready)
+			return;
+
 		if(element == null)
 			return;
 
@@ -1291,19 +1289,11 @@ class FXEditor extends hide.view.FileView {
 					}
 				}
 
-				if (child.flatten(Event).length > 0) {
-					if (child is Event) {
-						var e = Std.downcast(child, Event);
+				if (child.find(o -> Std.isOfType(o, IEvent)) != null) {
+					if (child is IEvent) {
+						var e = cast(child, IEvent);
 						section.events.push(e);
 						eventsToDraw.push(e);
-					}
-				}
-
-				if (child.flatten(hrt.prefab.fx.SubFX).length > 0) {
-					if (child is hrt.prefab.fx.SubFX) {
-						var s = Std.downcast(child, hrt.prefab.fx.SubFX);
-						section.events.push(s);
-						eventsToDraw.push(s);
 					}
 				}
 
@@ -1772,7 +1762,7 @@ class FXEditor extends hide.view.FileView {
 				if (event == null)
 					continue;
 
-				var previous = closest.getOrPut(event.findFirstLocal3d(), {instance: instance, distance: hxd.Math.POSITIVE_INFINITY, jumpTo: 0.0});
+				var previous = MapUtils.getOrPut(closest, event.findFirstLocal3d(), {instance: instance, distance: hxd.Math.POSITIVE_INFINITY, jumpTo: 0.0});
 				if (previous.distance == 0)
 					continue;
 
@@ -1840,7 +1830,10 @@ class FXEditor extends hide.view.FileView {
 	}
 
 	public function setRenderPropsEditionVisibility(visible : Bool) {
-		var renderPropsEditionEl = this.element.find('.render-props-edition');
+		var renderPropsEditionEl = this.element?.find('.render-props-edition');
+		// can appen on close
+		if (renderPropsEditionEl == null)
+			return;
 
 		if (!visible) {
 			renderPropsEditionEl.css({ display : 'none' });

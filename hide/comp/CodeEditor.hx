@@ -43,7 +43,13 @@ class CodeEditor extends Component {
 			mouseWheelZoom: true,
 			scrollBeyondLastLine: false,
 			insertSpaces : false,
-			detectIndentation : false
+			detectIndentation : false,
+			// To remove when scrollbar's bug is fixed (error when user click on scrollbar)
+			scrollbar: {
+				vertical:"hidden",
+				horizontal: "hidden",
+				handleMouseWheel:true,
+			},
 		});
 		var model = editor.getModel();
 		(model : Dynamic).__comp__ = this;
@@ -82,8 +88,13 @@ class CodeEditor extends Component {
 						if( r.insertText == null )
 							r.insertText = r.label;
 
-					res = res.concat(getKeyWordsCompletion());
 					return { suggestions : res };
+				}
+			});
+
+			monaco.Languages.registerCompletionItemProvider(lang, {
+				provideCompletionItems : function(model,position,_,_) {
+					return { suggestions : getKeyWordsCompletion() };
 				}
 			});
 		}
@@ -155,7 +166,8 @@ class CodeEditor extends Component {
 	public function setError( msg : String, line : Int, pmin : Int, pmax : Int ) {
 		var linePos = code.substr(0,pmin).lastIndexOf("\n");
 		if( linePos < 0 ) linePos = 0 else linePos++;
-		var range = new monaco.Range(line,pmin + 1 - linePos,line,pmax + 2 - linePos);
+		var delta = pmin == pmax ? 2 : 1;
+		var range = new monaco.Range(line,pmin + 1 - linePos,line,pmax + delta - linePos);
 		currrentDecos = editor.deltaDecorations(currrentDecos,[
 			{ range : range, options : { inlineClassName: "codeErrorContentLine", isWholeLine : true } },
 			{ range : range, options : { linesDecorationsClassName: "codeErrorLine", inlineClassName: "codeErrorContent" } }

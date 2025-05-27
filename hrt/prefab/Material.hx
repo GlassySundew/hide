@@ -168,6 +168,10 @@ class Material extends Prefab {
 			var flat = getRoot(false).flatten(Material);
 			@:privateAccess var pos = flat.indexOf(this);
 			previewSphere.x = ( pos - 1) * 5.0;
+
+			for (idx in (pos+1)...(flat.length))
+				if (flat[idx].previewSphere != null)
+					flat[idx].previewSphere.x = ( idx - 1) * 5.0;
 		}
 		#end
 
@@ -303,7 +307,7 @@ class Material extends Prefab {
 		}
 		else {
 			// temporary untill we find a proper way to remove a material
-			shared.editor.queueRebuild(parent);
+			shared.editor?.queueRebuild(parent);
 		}
 		super.editorRemoveInstanceObjects();
 	}
@@ -471,6 +475,47 @@ class Material extends Prefab {
 			var fx = findParent(hrt.prefab.fx.FX);
 			if(fx != null)
 				ctx.rebuildPrefab(fx, true);
+		});
+
+		group.find('.content').append(new hide.Element('<dt></dt>
+			<dd>
+				<input title="View references to this material used as a material library" type="button" value="View references" class="view-refs"/>
+			</dd>'));
+		group.find(".view-refs").click(function(_) {
+			var parentPath = shared.currentPath;
+			var refs : hide.view.RefViewer.Data = [];
+			var uniquesPath = [];
+
+			hide.Ide.inst.filterProps(function(data, path) {
+				var indexOf = path.indexOf("materials.props");
+				if (indexOf < 0)
+					return false;
+
+				var mats = Reflect.field(data, "materials");
+				var pbr : Array<Dynamic> = Reflect.field(mats, "PBR");
+				for (f in Reflect.fields(pbr)) {
+					var el = Reflect.field(pbr, f);
+					if (!Reflect.hasField(el, "__ref"))
+						continue;
+
+					var ref = Reflect.field(el, "__ref");
+					var matName = Reflect.field(el, "name");
+					if (ref != parentPath || matName != this.name)
+						continue;
+
+					var folderP = path.substring(0, indexOf - 1);
+					if (uniquesPath.contains(folderP))
+						continue;
+					uniquesPath.push(folderP);
+					refs.push({ str: folderP, goto: () -> { hide.Ide.inst.showFileInResources(folderP); } });
+				}
+				return false;
+			});
+
+			hide.Ide.inst.open("hide.view.RefViewer", null, null, function(view) {
+				var refViewer : hide.view.RefViewer = cast view;
+				refViewer.showRefs(refs, 'Number of references to "${this.name}"');
+			});
 		});
 
 		if( isPbr ) {

@@ -3,11 +3,11 @@ package hrt.shgraph;
 import hxsl.Ast.TExpr;
 using hxsl.Ast;
 using hrt.shgraph.Utils;
-using hrt.tools.MapUtils;
+import hrt.tools.MapUtils;
 
 using Lambda;
 
-typedef CacheEntry = {expr: TExpr, inputs: Array<ShaderNode.InputInfo>, outputs: Array<ShaderNode.OutputInfo>, idInputOrder: Map<Int, Int>, idOutputOrder: Map<Int,Int>};
+typedef CacheEntry = {expr: TExpr, funs: Array<TFunction>, inputs: Array<ShaderNode.InputInfo>, outputs: Array<ShaderNode.OutputInfo>, idInputOrder: Map<Int, Int>, idOutputOrder: Map<Int,Int>};
 
 class CustomSerializer extends hxsl.Serializer {
 
@@ -66,26 +66,32 @@ class ShaderNodeHxsl extends ShaderNode {
 
 	override public function getInputs() : Array<ShaderNode.InputInfo> {
 		var cl = std.Type.getClass(this);
-		return cache.getOrPut(cast cl, genCache(cl)).inputs;
+		return MapUtils.getOrPut(cache, cast cl, genCache(cl)).inputs;
 	}
 
 	override public function getOutputs() : Array<ShaderNode.OutputInfo> {
 		var cl = std.Type.getClass(this);
-		return cache.getOrPut(cast cl, genCache(cl)).outputs;
+		return MapUtils.getOrPut(cache, cast cl, genCache(cl)).outputs;
 	}
 
 	function genCache(cl: Class<ShaderNodeHxsl>) : CacheEntry {
 		var toUnser = (cl:Dynamic).SRC;
-		if (toUnser == null) throw "Node " + std.Type.getClassName(cl) + " has no SRC";
+		var className = std.Type.getClassName(cl);
+		if (toUnser == null) throw "Node " + className + " has no SRC";
+		var shortName = std.Type.getClassName(cl).split(".").pop();
 
 		var unser = new CustomSerializer();
 		var data = @:privateAccess unser.unserialize(toUnser);
 
+		var funs = [];
 		var expr : TExpr = null;
 		for (fn in data.funs) {
 			if (fn.ref.name == "fragment") {
 				expr = fn.expr;
 				break;
+			} else {
+				fn.ref.name = shortName + "_" + fn.ref.name; // De-duplicate function name if multiple nodes declare the same function name to avoid conflics
+				funs.push(fn);
 			}
 		}
 
@@ -111,12 +117,12 @@ class ShaderNodeHxsl extends ShaderNode {
 			}
 		}
 
-		return {expr: expr, inputs: inputs, outputs: outputs, idInputOrder: idInputOrder, idOutputOrder: idOutputOrder};
+		return {expr: expr, funs: funs, inputs: inputs, outputs: outputs, idInputOrder: idInputOrder, idOutputOrder: idOutputOrder};
 	}
 
 	override public function generate(ctx: NodeGenContext) : Void {
 		var cl = std.Type.getClass(this);
-		var cache = cache.getOrPut(cast cl, genCache(cl));
+		var cache = MapUtils.getOrPut(cache, cast cl, genCache(cl));
 
 		var infos : Map<Int, SgHxslVar> = cast (cl:Dynamic)._variablesInfos;
 		var varsOverride : Map<Int, TExpr> = [];
@@ -178,7 +184,11 @@ class ShaderNodeHxsl extends ShaderNode {
 							if (tvar != null) {
 								replacement = {e: TVar(tvar), p: e.p, t: e.t};
 							} else {
-								replacement = ctx.getGlobalTVar(v);
+								switch(v.type) {
+									case TFun(_): return e;// don't replace tfun vars with global decls
+									default:
+										replacement = ctx.getGlobalTVar(v);
+								}
 							}
 					}
 					if (replacement == null) {
@@ -189,7 +199,7 @@ class ShaderNodeHxsl extends ShaderNode {
 
 					return replacement;
 				case TVarDecl(v, init):
-					var tvar = varsRemap.getOrPut(v.id,
+					var tvar = MapUtils.getOrPut(varsRemap, v.id,
 						{
 							name: v.name,
 							id: hxsl.Ast.Tools.allocVarId(),
@@ -200,7 +210,7 @@ class ShaderNodeHxsl extends ShaderNode {
 						});
 					return makeExpr(TVarDecl(tvar, if( init != null ) patch(init) else null), e.t);
 				case TFor(v, it, loop):
-					var tvar = varsRemap.getOrPut(v.id,
+					var tvar = MapUtils.getOrPut(varsRemap, v.id,
 						{
 							name: v.name,
 							id: hxsl.Ast.Tools.allocVarId(),
@@ -246,6 +256,10 @@ class ShaderNodeHxsl extends ShaderNode {
 				default:
 					throw "function expr is not a block";
 			}
+		}
+
+		for (func in cache.funs) {
+			ctx.addFunction(func);
 		}
 	}
 

@@ -312,7 +312,7 @@ class MeshSpray extends Spray {
 			if( c.type == "model" )
 				makeChild(c);
 
-		cast(local3d, MeshSprayObject).redraw();
+		//cast(local3d, MeshSprayObject).redraw();
 		// then add other children (shaders etc.)
 		for( c in children )
 			if( c.type != "model" )
@@ -355,6 +355,9 @@ class MeshSpray extends Spray {
 	}
 
 	override function makeObject(parent3d:h3d.scene.Object):h3d.scene.Object {
+		#if editor
+		makeGuard ++;
+		#end
 		return new MeshSprayObject(this, parent3d);
 	}
 
@@ -367,7 +370,8 @@ class MeshSpray extends Spray {
 
 	override function applyTransform() {
 		super.applyTransform();
-		cast(local3d, MeshSprayObject).redraw();
+		if (makeGuard == 0)
+			cast(local3d, MeshSprayObject).redraw();
 	}
 
 	override function flatten<T:Prefab>( ?cl : Class<T>, ?arr: Array<T> ) : Array<T> {
@@ -627,6 +631,55 @@ class MeshSpray extends Spray {
 			hideChildren : p -> return (!editChildren && Std.isOfType(p, Model)),
 			onChildUpdate: p -> cast(local3d, MeshSprayObject).redraw(),
 		};
+	}
+
+	static function onContextMenu(selection: Array<hrt.prefab.Prefab>) : Array<hide.comp.ContextMenu.MenuItem> {
+		return [{
+			label: "Set To Ground",
+			click: () -> {
+				var selectedSprays : Array<MeshSpray> = cast selection;
+
+				selectedSprays[0].sceneEditor.view.pushUndoStack();
+				for (spray in selectedSprays) {
+					spray.setToGround();
+				}
+				selectedSprays[0].sceneEditor.view.popUndoStack();
+
+			},
+		}];
+	}
+
+	function setToGround() {
+		var mso = cast(local3d,MeshSprayObject);
+		var undo = undo;
+		undo.change(Custom(function(undo) {
+		}));
+		for( c in this.children ) {
+			var obj = c.to(Object3D);
+			if( obj == null ) continue;
+			setGroundPos(obj);
+			obj.applyTransform();
+			wasEdited = true;
+		}
+		if ( this.binaryMeshes != null ) {
+			var pos = new h3d.col.Point(0,0,0);
+			for ( bm in this.binaryMeshes ) {
+				var pivot = mso.getAbsPos();
+				pos.x = bm.x + pivot.tx;
+				pos.y = bm.y + pivot.ty;
+				pos.z = bm.z + pivot.tz;
+				var ground = setGroundPos(null, pos);
+				bm.z += ground.mz;
+				bm.rotX = ground.rotX;
+				bm.rotY = ground.rotY;
+				bm.rotZ = ground.rotZ;
+			}
+			if ( this.binaryMeshes.length > 0) {
+				wasEdited = true;
+				binaryChanged = true;
+			}
+		}
+		mso.redraw();
 	}
 
 	override function edit( ectx : hide.prefab.EditContext ) {
@@ -909,37 +962,7 @@ class MeshSpray extends Spray {
 			});
 		});
 
-		options.find("#toground").click(function(_) {
-			var mso = cast(local3d,MeshSprayObject);
-			undo.change(Custom(function(undo) {
-			}));
-			for( c in this.children ) {
-				var obj = c.to(Object3D);
-				if( obj == null ) continue;
-				setGroundPos(obj);
-				obj.applyTransform();
-				wasEdited = true;
-			}
-			if ( this.binaryMeshes != null ) {
-				var pos = new h3d.col.Point(0,0,0);
-				for ( bm in this.binaryMeshes ) {
-					var pivot = mso.getAbsPos();
-					pos.x = bm.x + pivot.tx;
-					pos.y = bm.y + pivot.ty;
-					pos.z = bm.z + pivot.tz;
-					var ground = setGroundPos(null, pos);
-					bm.z += ground.mz;
-					bm.rotX = ground.rotX;
-					bm.rotY = ground.rotY;
-					bm.rotZ = ground.rotZ;
-				}
-				if ( this.binaryMeshes.length > 0) {
-					wasEdited = true;
-					binaryChanged = true;
-				}
-			}
-			mso.redraw();
-		});
+		options.find("#toground").click((e) -> setToGround());
 
 		options.find("#remove").click(function(_) {
 			var options = selectElement.children().elements();
@@ -1003,6 +1026,8 @@ class MeshSpray extends Spray {
 		</dl>
 		</div>'), this);
 	}
+
+	static var _1 = hide.comp.SceneEditor.registerContextMenuExtension(MeshSpray, onContextMenu);
 
 	#end
 

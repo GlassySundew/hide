@@ -113,8 +113,10 @@ class FileTree extends FileView {
 					icon : "ico ico-" + (isDir ? "folder" : (ext != null && ext.options.icon != null ? ext.options.icon : "file-text")),
 					children : isDir,
 				});
+				if (!isDir)
+					watch(fullPath, function() rebuild(), { checkDelete: true });
 			}
-			watch( basePath, function () rebuild(), { checkDelete : true } );
+			watch(basePath, function() rebuild(),{checkDelete:true});
 			content.sort(
 				function ( a, b ) {
 					if ( a.children != b.children ) return a.children ? -1 : 1;
@@ -123,7 +125,14 @@ class FileTree extends FileView {
 			return content;
 		};
 
-		tree.onRename = doRename;
+		tree.onRename = (path:String, name:String) -> {
+			// add old extension if previous one is missing
+			if (name.indexOf(".") == -1) {
+				var ext = path.split(".").pop();
+				name += "." + ext;
+			}
+			doRename(path, name);
+		};
 
 		element.contextmenu(function(e) {
 			var over = tree.getCurrentOver();
@@ -144,66 +153,124 @@ class FileTree extends FileView {
 					click : createNew.bind(selection[0], { options : { createNew : "Directory" }, extensions : null, component : null }),
 					icon : "folder",
 				});
-			hide.comp.ContextMenu.createFromEvent(cast e, [
-				{ label : "New...", menu:newMenu },
-				{ label : "Collapse", click : tree.collapseAll },
-				{ label : "", isSeparator: true },
-				{ label : "Copy Path", enabled : selection.length == 1, click : function() { ide.setClipboard(selection[0]); } },
-				{ label : "Copy Absolute Path", enabled : selection.length == 1, click : function() { ide.setClipboard(Ide.inst.getPath(selection[0])); } },
-				{ label : "Open in Explorer", enabled : selection.length == 1, click : function() { onExploreFile(selection[0]); } },
-				{ label : "Find References", enabled : selection.length == 1, click : onFindPathRef.bind(selection[0])},
-				{ label : "", isSeparator: true },
-				{ label : "Clone", enabled : selection.length == 1, click : function() {
-						try {
-							if (onCloneFile(selection[0])) {
-								tree.refresh();
+
+				var options : Array<hide.comp.ContextMenu.MenuItem> = [
+					{ label : "New...", menu:newMenu },
+					{ label : "Collapse", click : tree.collapseAll },
+					{ label : "", isSeparator: true },
+					{ label : "Copy Path", enabled : selection.length == 1, click : function() { ide.setClipboard(selection[0]); } },
+					{ label : "Copy Absolute Path", enabled : selection.length == 1, click : function() { ide.setClipboard(Ide.inst.getPath(selection[0])); } },
+					{ label : "Open in Explorer", enabled : selection.length == 1, click : function() { onExploreFile(selection[0]); } },
+					{ label : "Find References", enabled : selection.length == 1, click : onFindPathRef.bind(selection[0])},
+					{ label : "", isSeparator: true },
+					{ label : "Clone", enabled : selection.length == 1, click : function() {
+							try {
+								if (onCloneFile(selection[0])) {
+									tree.refresh();
+								}
+							} catch (e : Dynamic) {
+								js.Browser.window.alert(e);
 							}
+						} },
+					{ label : "Rename", enabled : selection.length == 1, click : function() {
+						try {
+							onRenameFile(selection[0]);
 						} catch (e : Dynamic) {
 							js.Browser.window.alert(e);
 						}
-					} },
-				{ label : "Rename", enabled : selection.length == 1, click : function() {
-					try {
-						onRenameFile(selection[0]);
-					} catch (e : Dynamic) {
-						js.Browser.window.alert(e);
-					}
-					} },
-				{ label : "Move", enabled : selection.length > 0, click : function() {
-					ide.chooseDirectory(function(dir) {
-						for (current in selection) {
-							doRename(current, "/"+dir+"/"+current.split("/").pop());
-						}
-					});
-				}},
-				{ label : "Delete", enabled : selection.length > 0, click : function() {
-					if( js.Browser.window.confirm("Delete " + selection.join(", ") + "?") ) {
-						for (current in selection) {
-							onDeleteFile(current);
-						}
-						tree.refresh();
-					}
-				}},
-				{ label: "Replace Refs With", enabled: selection.length > 0, click : function() {
-					ide.chooseFile(["*"], (newPath: String) -> {
-						if(ide.confirm('Replace all refs of $selection with $newPath ? This action can not be undone')) {
-							for (oldPath in selection) {
-								replacePathInFiles(oldPath, newPath, false);
+						} },
+					{ label : "Move", enabled : selection.length > 0, click : function() {
+						ide.chooseDirectory(function(dir) {
+							for (current in selection) {
+								doRename(current, "/"+dir+"/"+current.split("/").pop());
 							}
-							ide.message("Done");
+						});
+					}},
+					{ label : "Delete", enabled : selection.length > 0, click : function() {
+						if( js.Browser.window.confirm("Delete " + selection.join(", ") + "?") ) {
+							for (current in selection) {
+								onDeleteFile(current);
+							}
+							tree.refresh();
 						}
-					});
-				}},
-			]);
+					}},
+					{ label: "Replace Refs With", enabled: selection.length > 0, click : function() {
+						ide.chooseFile(["*"], (newPath: String) -> {
+							if(ide.confirm('Replace all refs of $selection with $newPath ? This action can not be undone')) {
+								for (oldPath in selection) {
+									replacePathInFiles(oldPath, newPath, false);
+								}
+								ide.message("Done");
+							}
+						});
+					}}
+				];
+
+				if (ide.isSVNAvailable()) {
+					options.push({ label : "", isSeparator: true });
+					options.push({ label: "SVN Revert", enabled: selection.length == 1, click : function() {
+						var path = ide.getPath(selection[0]);
+						js.node.ChildProcess.exec('cmd.exe /c start "" TortoiseProc.exe /command:revert /path:"$path"', { cwd: ide.getPath(ide.resourceDir) }, (error, stdout, stderr) -> {
+							if (error != null)
+								ide.quickError('Error while trying to revert file ${path} : ${error}');
+						});
+					}});
+					options.push({ label: "SVN Log", enabled: selection.length == 1, click : function() {
+						var path = ide.getPath(selection[0]);
+						js.node.ChildProcess.exec('cmd.exe /c start "" TortoiseProc.exe /command:log /path:"$path"', { cwd: ide.getPath(ide.resourceDir) }, (error, stdout, stderr) -> {
+							if (error != null)
+								ide.quickError('Error while trying to log file ${path} : ${error}');
+						});
+					}});
+					options.push({ label: "SVN Blame", enabled: selection.length == 1, click : function() {
+						var path = ide.getPath(selection[0]);
+						js.node.ChildProcess.exec('cmd.exe /c start "" TortoiseProc.exe /command:blame /path:"$path"', { cwd: ide.getPath(ide.resourceDir) }, (error, stdout, stderr) -> {
+							if (error != null)
+								ide.quickError('Error while trying to blame file ${path} : ${error}');
+						});
+					}});
+				}
+				hide.comp.ContextMenu.createFromEvent(cast e, options);
 		});
 		tree.onDblClick = onOpenFile;
 		tree.onAllowMove = onAllowMove;
 		tree.onMove = doMove;
 		tree.init();
+
+		if (ide.isSVNAvailable()) {
+			var svnModifiedFiles = ide.getSVNModifiedFiles();
+			tree.applyStyle = (p, el) -> {
+				var isModified = false;
+				for (f in svnModifiedFiles) {
+					if (ide.getPath(f).indexOf(p) >= 0) {
+						isModified = true;
+						break;
+					}
+				}
+
+				if (isModified) {
+					if (ide.ideConfig.svnShowModifiedFiles)
+						el.addClass("svn-modified");
+						el.removeClass("svn-versioned");
+				}
+				else {
+					if (ide.ideConfig.svnShowVersionedFiles)
+						el.addClass("svn-versioned");
+					el.removeClass("svn-modified");
+				}
+			};
+		}
 	}
 
 	function onRenameFile( path : String ) {
-		var newFilename = ide.ask("New name:", path.substring( path.lastIndexOf("/") + 1 ));
+		var oldName = path.substring( path.lastIndexOf("/") + 1 );
+		var newFilename = ide.ask("New name:", oldName);
+
+		// If the user removed the extension, add the old one
+		if (newFilename.indexOf(".") == -1) {
+			var ext = oldName.split(".").pop();
+			newFilename += "." + ext;
+		}
 
 		while ( newFilename != null && sys.FileSystem.exists(ide.getPath(newFilename))) {
 			newFilename = ide.ask("This file already exists. Another new name:");
@@ -276,11 +343,15 @@ class FileTree extends FileView {
 				if( isDir && !ide.confirm("Renaming a SVN directory, but 'svn' system command was not found. Continue ?") )
 					return false;
 			} else {
-				// Check if file is versioned before using svn rename
-				if (js.node.ChildProcess.spawnSync("svn",["info", ide.getPath(path)]).status == 0) {
+				// Check if origin file and target directory are versioned
+				var isFileVersioned = js.node.ChildProcess.spawnSync("svn",["info", ide.getPath(path)]).status == 0;
+				var newAbsPath = ide.getPath(newPath);
+				var parentFolder = newAbsPath.substring(0, newAbsPath.lastIndexOf('/'));
+				var isDirVersioned = js.node.ChildProcess.spawnSync("svn",["info", parentFolder]).status == 0;
+				if (isFileVersioned && isDirVersioned) {
 					var cwd = Sys.getCwd();
 					Sys.setCwd(ide.resourceDir);
-					var code = Sys.command("svn",["rename",path,newPath]);
+					var code = Sys.command("svn",["rename", path, newPath]);
 					Sys.setCwd(cwd);
 					if( code == 0 )
 						wasRenamed = true;
@@ -461,7 +532,12 @@ class FileTree extends FileView {
 			var extensionNewFile = getExtension(targetPath);
 
 			if (extensionNewFile == null) {
-				var extensionSourceFile = getExtension(sourcePath).extensions[0];
+				var extensionSourceFile = '';
+				var sourceExt = sourcePath.substr(sourcePath.lastIndexOf('.') + 1);
+				for (e in getExtension(sourcePath).extensions) {
+					if (e == sourceExt)
+						extensionSourceFile = e;
+				}
 				if (extensionSourceFile != null) {
 					targetPath =  targetPath + "." + extensionSourceFile;
 				}

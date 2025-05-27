@@ -1,15 +1,14 @@
 package hrt.impl;
 
 /**
-	A simple socket-based local communication channel,
+	A simple socket-based local communication channel (plaintext and unsafe),
 	aim at communicate between 2 programs (e.g. Hide and a HL game).
 
-	Usage in game:
+	Usage in game (see also hrt.impl.RemoteTools):
 	```haxe
 	var rcmd = new hrt.impl.RemoteConsole();
 	// rcmd.log = (msg) -> logToUI(msg);
 	// rcmd.logError = (msg) -> logErrorToUI(msg);
-	rcmd.registerCommands(handler);
 	rcmd.connect();
 	rcmd.sendCommand("log", "Hello!", function(r) {});
 	```
@@ -22,14 +21,15 @@ class RemoteConsole {
 	public var host : String;
 	public var port : Int;
 	var sock : hxd.net.Socket;
-	var cSocks : Array<RemoteConsoleConnection>;
+	public var connections : Array<RemoteConsoleConnection>;
 
 	public function new( ?port : Int, ?host : String ) {
 		this.host = host ?? DEFAULT_HOST;
 		this.port = port ?? DEFAULT_PORT;
+		this.connections = [];
 	}
 
-	public function startServer( ?onClient : RemoteConsoleConnection->Void ) {
+	public function startServer( ?onClient : RemoteConsoleConnection -> Void ) {
 		close();
 		sock = new hxd.net.Socket();
 		sock.onError = function(msg) {
@@ -38,13 +38,10 @@ class RemoteConsole {
 		}
 		sock.bind(host, port, function(s) {
 			var connection = new RemoteConsoleConnection(this, s);
-			cSocks.push(connection);
+			connections.push(connection);
 			s.onError = function(msg) {
 				connection.logError("Client error: " + msg);
 				connection.close();
-				if( cSocks != null ) {
-					cSocks.remove(connection);
-				}
 				connection = null;
 			}
 			s.onData = () -> connection.handleOnData();
@@ -58,6 +55,8 @@ class RemoteConsole {
 	public function connect( ?onConnected : Bool -> Void ) {
 		close();
 		sock = new hxd.net.Socket();
+		var connection = new RemoteConsoleConnection(this, sock);
+		connections.push(connection);
 		sock.onError = function(msg) {
 			if( !SILENT_CONNECT )
 				logError("Socket Error: " + msg);
@@ -65,8 +64,6 @@ class RemoteConsole {
 			if( onConnected != null )
 				onConnected(false);
 		}
-		var connection = new RemoteConsoleConnection(this, sock);
-		cSocks.push(connection);
 		sock.onData = () -> connection.handleOnData();
 		sock.connect(host, port, function() {
 			log("Connected to server");
@@ -82,58 +79,12 @@ class RemoteConsole {
 			sock.close();
 			sock = null;
 		}
-		if( cSocks != null ) {
-			for( s in cSocks )
-				s.close();
+		// prevent remove during iteration by c.close
+		var prevConnections = connections;
+		connections = [];
+		for( c in prevConnections ) {
+			c.close();
 		}
-		cSocks = [];
-	}
-
-	public function isConnected() {
-		return sock != null;
-	}
-
-	public dynamic function log( msg : String ) {
-		trace(msg);
-	}
-
-	public dynamic function logError( msg : String ) {
-		trace('[Error] $msg');
-	}
-
-	public function sendCommand( cmd : String, ?args : Dynamic, ?onResult : Dynamic -> Void ) {
-		if( cSocks.length == 0 ) {
-			// Ignore send when not really connected
-		} else if( cSocks.length == 1 ) {
-			cSocks[0].sendCommand(cmd, args, onResult);
-		} else {
-			logError("Send to multiple target not implemented");
-		}
-	}
-
-}
-
-@:keep
-@:rtti
-class RemoteConsoleConnection {
-
-	var UID : Int = 0;
-	var parent : RemoteConsole;
-	var sock : hxd.net.Socket;
-	var waitReply : Map<Int, Dynamic->Void> = [];
-
-	public function new( parent : RemoteConsole, s : hxd.net.Socket ) {
-		this.parent = parent;
-		this.sock = s;
-		registerCommands(this);
-	}
-
-	public function close() {
-		UID = 0;
-		waitReply = [];
-		if( sock != null )
-			sock.close();
-		sock = null;
 		onClose();
 	}
 
@@ -153,6 +104,66 @@ class RemoteConsoleConnection {
 	}
 
 	public function sendCommand( cmd : String, ?args : Dynamic, ?onResult : Dynamic -> Void ) {
+		if( connections.length == 0 ) {
+			// Ignore send when not really connected
+		} else if( connections.length == 1 ) {
+			connections[0].sendCommand(cmd, args, onResult);
+		} else {
+			for( c in connections ) {
+				c.sendCommand(cmd, args, onResult);
+			}
+		}
+	}
+
+}
+
+@:keep
+@:rtti
+class RemoteConsoleConnection {
+
+	var UID : Int = 0;
+	var parent : RemoteConsole;
+	var sock : hxd.net.Socket;
+	var waitReply : Map<Int, Dynamic->Void> = [];
+	var commands : Map<String, (args:Dynamic, onDone:Dynamic->Void) -> Void> = [];
+
+	public function new( parent : RemoteConsole, s : hxd.net.Socket ) {
+		this.parent = parent;
+		this.sock = s;
+		registerCommands(this);
+	}
+
+	public function close() {
+		UID = 0;
+		waitReply = [];
+		commands = [];
+		if( sock != null )
+			sock.close();
+		sock = null;
+		if( parent != null )
+			parent.connections.remove(this);
+		parent = null;
+		onClose();
+	}
+
+	public function isConnected() {
+		return sock != null;
+	}
+
+	public dynamic function onClose() {
+	}
+
+	public dynamic function log( msg : String ) {
+		trace(msg);
+	}
+
+	public dynamic function logError( msg : String ) {
+		trace('[Error] $msg');
+	}
+
+	public function sendCommand( cmd : String, ?args : Dynamic, ?onResult : Dynamic -> Void ) {
+		if( sock == null )
+			return;
 		var id = ++UID;
 		waitReply.set(id, onResult);
 		sendData(cmd, args, id);
@@ -165,20 +176,22 @@ class RemoteConsoleConnection {
 	}
 
 	public function handleOnData() {
-		var str = sock.input.readLine().toString();
-		var obj = try { haxe.Json.parse(str); } catch (e) { logError("Parse error: " + e); null; };
-		if( obj == null || obj.id == null ) {
-			return;
-		}
-		var id : Int = obj.id;
-		if( id <= 0 ) {
-			var onResult = waitReply.get(-id);
-			waitReply.remove(-id);
-			if( onResult != null ) {
-				onResult(obj.args);
+		while( sock.input.available > 0 ) {
+			var str = sock.input.readLine().toString();
+			var obj = try { haxe.Json.parse(str); } catch (e) { logError("Parse error: " + e); null; };
+			if( obj == null || obj.id == null ) {
+				continue;
 			}
-		} else {
-			onCommand(obj.cmd, obj.args, (result) -> sendData(null, result, -id));
+			var id : Int = obj.id;
+			if( id <= 0 ) {
+				var onResult = waitReply.get(-id);
+				waitReply.remove(-id);
+				if( onResult != null ) {
+					onResult(obj.args);
+				}
+			} else {
+				onCommand(obj.cmd, obj.args, (result) -> sendData(null, result, -id));
+			}
 		}
 	}
 
@@ -195,12 +208,12 @@ class RemoteConsoleConnection {
 
 	// ----- Commands -----
 
-	var commands = new Map<String, (args:Dynamic, onDone:Dynamic->Void) -> Void>();
-
 	/**
-		register a single command f.
-		`args` can be null, or an object that can be parse from/to json.
-		`onDone(result)` must be call when `f` finished, and `result` can be null or a json serializable object.
+		Register a single command `name`, with `f` as command handler.
+		`args` can be null, or an object that can be parsed from/to json.
+		`onDone(result)` must be called when `f` finishes, and `result` can be null or a json serializable object.
+
+		If `f` is `null`, the command is considered removed.
 	 */
 	public function registerCommand( name : String, f : (args:Dynamic, onDone:Dynamic->Void) -> Void ) {
 		commands.set(name, f);
@@ -272,41 +285,187 @@ class RemoteConsoleConnection {
 		log("[>] " + args);
 	}
 
-	@cmd function cwd() {
-		return Sys.getCwd();
+	@cmd("logError") function logErrorCmd( args : Dynamic ) {
+		logError("[>] " + args);
 	}
 
-	@cmd function programPath() {
-		return Sys.programPath();
+	function sendLog( msg : String ) {
+		sendCommand("log", msg);
+	}
+
+	function sendLogError( msg : String ) {
+		sendCommand("logError", msg);
+	}
+
+	@cmd function info() {
+		return {
+			programPath : Sys.programPath(),
+			args : Sys.args(),
+			cwd : Sys.getCwd(),
+		};
+	}
+
+	// ----- Console ------
+
+	@cmd function runInConsole( args : { cmd : String } ) : Int {
+		return onConsoleCommand(args?.cmd ?? "");
+	}
+
+	public dynamic function onConsoleCommand( cmd : String ) : Int {
+		sendLogError('onConsoleCommand not implemented, received $cmd');
+		return -1;
 	}
 
 #if editor
-	@cmd function open( args : { file : String, line : Int, column : Int, cdbsheet : String } ) {
+	// ----- Hide ------
+
+	var parser : hscript.Parser;
+	@cmd function open( args : { file : String, ?line : Int, ?column : Int, ?cdbsheet : String,
+								?selectExpr : String } ) {
 		if( args == null )
 			return;
+		if( parser == null ) {
+			parser = new hscript.Parser();
+			parser.identChars += "$";
+		}
 		if( args.cdbsheet != null ) {
 			var sheet = hide.Ide.inst.database.getSheet(args.cdbsheet);
-			hide.Ide.inst.open("hide.view.CdbTable", {}, function(view) {
-				Std.downcast(view,hide.view.CdbTable).goto(sheet,args.line,args.column);
+			hide.Ide.inst.open("hide.view.CdbTable", {}, null, function(view) {
+				hide.Ide.inst.focus();
+				var line = args.line;
+				if( sheet != null && args.selectExpr != null ) {
+					try {
+						var expr = parser.parseString(args.selectExpr);
+						for( i in 0...sheet.lines.length ) {
+							if( evalExpr(sheet.lines[i], expr) == true ) {
+								line = i;
+								break;
+							}
+						}
+					} catch( e ) {
+						hide.Ide.inst.quickError(e);
+					}
+				}
+				Std.downcast(view, hide.view.CdbTable).goto(sheet, line, args.column ?? -1);
 			});
 		} else {
-			hide.Ide.inst.openFile(args.file);
+			hide.Ide.inst.showFileInResources(args.file);
+			hide.Ide.inst.openFile(args.file, null, function(view) {
+				hide.Ide.inst.focus();
+				var domkitView = Std.downcast(view, hide.view.Domkit);
+				if( domkitView != null ) {
+					var col = args.column ?? 0;
+					var line = (args.line ?? 0) + 1;
+					haxe.Timer.delay(function() {
+						var cssEditor = @:privateAccess domkitView.cssEditor;
+						if (cssEditor != null) {
+							cssEditor.focus();
+							@:privateAccess cssEditor.editor.revealLineInCenter(line);
+							@:privateAccess cssEditor.editor.setPosition({ column: col, lineNumber: line });
+						}
+					}, 1);
+				}
+				if( args.selectExpr != null ) {
+					var sceneEditor : hide.comp.SceneEditor = null;
+					var prefabView = Std.downcast(view, hide.view.Prefab);
+					if( prefabView != null ) {
+						sceneEditor = prefabView.sceneEditor;
+					}
+					var fxView = Std.downcast(view, hide.view.FXEditor);
+					if( fxView != null ) {
+						@:privateAccess sceneEditor = fxView.sceneEditor;
+					}
+					var modelView = Std.downcast(view, hide.view.Model);
+					if( modelView != null ) {
+						@:privateAccess sceneEditor = modelView.sceneEditor;
+					}
+					if( sceneEditor != null ) {
+						try {
+							var expr = parser.parseString(args.selectExpr);
+							@:privateAccess var objs = sceneEditor.sceneData.findAll(null, function(o) {
+								return evalExpr(o, expr);
+							});
+							sceneEditor.delayReady(() -> sceneEditor.selectElements(objs));
+						} catch( e ) {
+							hide.Ide.inst.quickError(e);
+						}
+					}
+				}
+			});
+		}
+	}
+
+	function evalExpr( o : Dynamic, e : hscript.Expr ) : Dynamic {
+		switch( e.e ) {
+		case EConst(c):
+			switch( c ) {
+			case CInt(v): return v;
+			case CFloat(f): return f;
+			case CString(s): return s;
+			}
+		case EIdent("$"):
+			return o;
+		case EIdent("null"):
+			return null;
+		case EIdent(v):
+			return v; // Unknown ident, consider as a String literal
+		case EField(e, f):
+			var v = evalExpr(o, e);
+			return Reflect.field(v, f);
+		case EBinop(op, e1, e2):
+			var v1 = evalExpr(o, e1);
+			var v2 = evalExpr(o, e2);
+			switch( op ) {
+			case "==": return Reflect.compare(v1, v2) == 0;
+			case "&&": return v1 == true && v2 == true;
+			default:
+				throw "Can't eval " + Std.string(v1) + " " + op + " " + Std.string(v2);
+			}
+		default:
+			throw "Unsupported expression " + hscript.Printer.toString(e);
 		}
 	}
 #end
 
 #if hl
-	@cmd function dump( args : { file : String } ) {
+	// ----- Hashlink ------
+
+	@cmd function gcMajor() : Int {
+		var start = haxe.Timer.stamp();
+		hl.Gc.major();
+		var duration_us = (haxe.Timer.stamp() - start) * 1_000_000.;
+		return Std.int(duration_us);
+	}
+
+	@cmd function dumpMemory( args : { file : String } ) {
 		hl.Gc.major();
 		hl.Gc.dumpMemory(args?.file);
 		if( hxd.res.Resource.LIVE_UPDATE ) {
 			var msg = "hxd.res.Resource.LIVE_UPDATE is on, you may want to disable it for mem dumps; RemoteConsole can also impact memdumps.";
 			logError(msg);
-			sendCommand("log", msg);
+			sendLogError(msg);
 		}
 	}
 
-	@cmd function prof( args : { action : String, samples : Int, delay_ms : Int }, onDone : Dynamic -> Void ) {
+	@cmd function liveObjects( args : { clname : String } ) : Int {
+		if( args == null || args.clname == null )
+			return -1;
+		#if( hl_ver >= version("1.15.0") && haxe_ver >= 5 )
+		hl.Gc.major();
+		var cl = std.Type.resolveClass(args.clname);
+		if( cl == null ) {
+			sendLogError('Failed to find class for ${args.clname}');
+			return -1;
+		}
+		var c = hl.Gc.getLiveObjects(cl, 0);
+		return c.count;
+		#else
+		sendLogError("getLiveObjects not supported, please use hl >= 1.15.0 and haxe >= 5.0.0");
+		return -1;
+		#end
+	}
+
+	@cmd function profCpu( args : { action : String, samples : Int, delay_ms : Int }, onDone : Dynamic -> Void ) {
 		function doProf( args ) {
 			switch( args.action ) {
 			case "start":
@@ -322,7 +481,7 @@ class RemoteConsoleConnection {
 				hl.Profile.event(-4); // pause all
 				hl.Profile.event(-3); // clear data
 			default:
-				sendCommand("log", "Missing argument action for prof");
+				sendLogError('profCpu: action ${args?.action} not supported');
 			}
 		}
 		if( args == null ) {
@@ -336,6 +495,107 @@ class RemoteConsoleConnection {
 			doProf(args);
 			onDone(null);
 		}
+	}
+
+	@cmd function profTrack( args : { action : String } ) : Int {
+		switch( args?.action ) {
+		case "start":
+			var tmp = hl.Profile.globalBits;
+			tmp.set(Alloc);
+			hl.Profile.globalBits = tmp;
+			hl.Profile.reset();
+		case "dump":
+			hl.Profile.dump("memprofSize.dump", true, false);
+			hl.Profile.dump("memprofCount.dump", false, true);
+		default:
+			sendLogError('Action ${args?.action} not supported');
+			return -1;
+		}
+		return 0;
+	}
+
+	// ----- Heaps ------
+
+	@cmd function dumpGpu( args : { action : String } ) : Int {
+		switch( args?.action ) {
+		case "enable":
+			h3d.impl.MemoryManager.enableTrackAlloc(true);
+		case "disable":
+			h3d.impl.MemoryManager.enableTrackAlloc(false);
+		case "dump":
+			var engine = h3d.Engine.getCurrent();
+			if( engine == null ) {
+				sendLogError("h3d.Engine.getCurrent() == null");
+				return -1;
+			}
+			var stats = engine.mem.allocStats();
+			if( stats.length <= 0 ) {
+				var msg = "No alloc found, enable with h3d.impl.MemoryManager.enableTrackAlloc()";
+				sendLogError(msg);
+				return -2;
+			}
+			var sb = new StringBuf();
+			stats.sort((s1, s2) -> (s1.size > s2.size && s2.size > 0) ? -1 : 1);
+			var total = 0;
+			var textureSize = 0;
+			var bufferSize = 0;
+			for( s in stats ) {
+				var size = Std.int(s.size / 1024);
+				total += size;
+				if ( s.tex )
+					textureSize += size;
+				else
+					bufferSize += size;
+				sb.add((s.tex?"Texture ":"Buffer ") + '${s.position} #${s.count} ${Std.int(s.size/1024)}kb\n');
+			}
+			sb.add('TOTAL: ${total}kb\n');
+			sb.add('TEXTURE TOTAL: ${textureSize}kb\n');
+			sb.add('BUFFER TOTAL: ${bufferSize}kb\n');
+			sb.add('\nDETAILS\n');
+			for(s in stats) {
+				sb.add('${s.position} #${s.count} ${Std.int(s.size/1024)}kb\n');
+				s.stacks.sort((s1, s2) -> (s1.size > s2.size && s2.size > 0) ? -1 : 1);
+				for (stack in s.stacks) {
+					sb.add('\t#${stack.count} ${Std.int(stack.size/1024)}kb ${stack.stack.split('\n').join('\n\t\t')}\n');
+					for ( s in stack.stats )
+						sb.add('\t\t${s.name} ${Std.int(s.size/1024)}kb\n');
+				}
+			}
+			sys.io.File.saveContent("gpudump.txt", sb.toString());
+		default:
+			sendLogError('Action ${args?.action} not supported');
+			return -1;
+		}
+		return 0;
+	}
+
+	@cmd function profScene( args : { action : String } ) : Int {
+		#if sceneprof
+		switch( args?.action ) {
+		case "start":
+			h3d.impl.SceneProf.start();
+		case "dump":
+			h3d.impl.SceneProf.stop();
+			h3d.impl.SceneProf.save("sceneprof.json");
+		default:
+			sendLogError('Action ${args?.action} not supported');
+			return -1;
+		}
+		return 0;
+		#else
+		sendLogError("SceneProf not supported, please compile with -D sceneprof");
+		return -1;
+		#end
+	}
+
+	@cmd function buildFiles( onDone : Int -> Void ) {
+		sendLog("Build files begin");
+		BuildTools.buildAllFiles( null, null, null, function(count, errCount) {
+			if( errCount > 0 ) {
+				sendLogError('Build files has $errCount errors, please check game log for more details');
+			}
+			onDone(count);
+		});
 	}
 
 #end

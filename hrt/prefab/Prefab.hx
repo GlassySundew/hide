@@ -63,7 +63,11 @@ class Prefab {
 	/**
 		The associated source file (an image, a 3D model, etc.) if the prefab type needs it.
 	**/
-	@:s public var source : String;
+	@:s public var source(default, set) : String;
+
+	public function set_source(newSource: String) {
+		return source = newSource;
+	}
 
 	/**
 		The parent of the prefab in the tree view
@@ -153,10 +157,16 @@ class Prefab {
 		if (!shouldBeInstanciated())
 			return this;
 
+		if (this.parent == null)
+			shared.findCache = [];
+
 		makeInstance();
 		for (c in children)
 			makeChild(c);
 		postMakeInstance();
+
+		if (this.parent == null)
+			shared.findCache = null;
 
 		return this;
 	}
@@ -426,6 +436,17 @@ class Prefab {
 		Returns null if no matching prefab was found
 	**/
 	public function find<T:Prefab>(?cl: Class<T>, ?filter : T -> Bool, followRefs : Bool = false, includeDisabled: Bool = true) : Null<T> {
+		if (shared.findCache != null && filter == null && followRefs && includeDisabled) {
+			var prev : hrt.prefab.Prefab = shared.findCache.get(cast cl);
+			if (prev != null)
+				return cast prev;
+			prev = findRec(cl, filter, followRefs, includeDisabled);
+			shared.findCache.set(cast cl, prev);
+		}
+		return findRec(cl, filter, followRefs, includeDisabled);
+	}
+
+	function findRec<T:Prefab>(?cl: Class<T>, ?filter : T -> Bool, followRefs : Bool = false, includeDisabled: Bool = true) : Null<T> {
 		if (!includeDisabled && !enabled)
 			return null;
 		var asCl = cl != null ? Std.downcast(this, cl) : cast this;
@@ -433,7 +454,7 @@ class Prefab {
 			if (filter == null || filter(asCl))
 				return asCl;
 		for( p in children ) {
-			var v = p.find(cl, filter, followRefs);
+			var v = p.findRec(cl, filter, followRefs);
 			if( v != null ) return v;
 		}
 		return null;
@@ -444,14 +465,14 @@ class Prefab {
 		The result is stored in the given array `arr` if it's defined, otherwise an array is created. The final array
 		is then returned.
 	**/
-	public function findAll<T:Prefab>(?cl: Class<T>, ?filter : Prefab -> Bool, followRefs : Bool = false, ?arr : Array<T> ) : Array<T> {
+	public function findAll<T:Prefab>(?cl: Class<T>, ?filter : T -> Bool, followRefs : Bool = false, ?arr : Array<T> ) : Array<T> {
 		if( arr == null ) arr = [];
 		var asCl = cl != null ? Std.downcast(this, cl) : cast this;
 		if (asCl != null) {
 			if (filter == null || filter(asCl))
 				arr.push(asCl);
 		}
-		if (followRefs) {
+		if (followRefs && this.shouldBeInstanciated()) {
 			var ref = to(Reference);
 			if (ref != null && ref.refInstance != null) {
 				ref.refInstance.findAll(cl, filter, followRefs, arr);
@@ -468,6 +489,9 @@ class Prefab {
 	**/
 	public function findParent<T:Prefab>(?cl:Class<T> ,?filter : (p:T) -> Bool, includeSelf:Bool = false, followRefs:Bool = false) : Null<T> {
 		var current = includeSelf ? this : this.parent;
+		if (current == null && followRefs)
+			current = this.shared.parentPrefab;
+
 		while(current != null) {
 			var asCl = cl != null ? Std.downcast(current, cl) : cast current;
 			if (asCl != null) {
@@ -496,34 +520,58 @@ class Prefab {
 		return [].iterator();
 	}
 
+
+	/**
+		Returns a name that will allow to disambiguate this
+		prefabs from siblings with the same name
+		Prefab with more than one sibling with the same name
+		will have their name formated as `name-<index>` unless their index is 0.
+	**/
+	public function getUniqueName() {
+		if (parent == null) {
+			return "";
+		}
+
+		var path = name;
+		var suffix = 0;
+		for(i => c in parent.children) {
+			if(c == this)
+				break;
+			else {
+				var cname = c.name ?? "";
+				if(cname == path)
+					++suffix;
+			}
+		}
+		if(suffix > 0)
+			path += "-" + suffix;
+		return path;
+	}
+
 	/**
 		Returns the absolute name path for this prefab
 	**/
-	public function getAbsPath(unique=false) {
+	public function getAbsPath(unique=false, followRef : Bool = false) {
+		var origParent = parent;
+		var parent = parent;
+		if (parent != null && followRef) {
+			var ref = Std.downcast(parent.shared.parentPrefab, Reference);
+			if (ref != null && ref.refInstance == parent)
+				parent = ref;
+		}
 		if(parent == null)
 			return "";
 		var path = name ?? "";
 		if (path == "")
 			path = hrt.prefab.Prefab.emptyNameReplacement;
 		if(unique) {
-			var suffix = 0;
-			for(i in 0...parent.children.length) {
-				var c = parent.children[i];
-				if(c == this)
-					break;
-				else {
-					var cname = c.name ?? "";
-					if(cname == path)
-						++suffix;
-				}
-			}
-			if(suffix > 0)
-				path += "-" + suffix;
+			path = getUniqueName();
 		}
 		if(parent.parent != null)
 			path = parent.getAbsPath(unique) + "." + path;
 		return path;
 	}
+
 
 	/**
 		If the prefab `props` represent CDB data, returns the sheet name of it, or null.
@@ -600,7 +648,6 @@ class Prefab {
 		editorRemoveInstanceObjects();
 		dispose();
 	}
-
 
 	/**
 		Called by the editor to remove the objects created by this prefab but not its children.
@@ -702,20 +749,32 @@ class Prefab {
 	/**
 		Finds a prefab by folowing a dot separated path like this one : `parent.child.grandchild`.
 		Returns null if the path is invalid or does not match any prefabs in the hierarchy
+		If the path contains many prefabs with the same name, they can be disambiguated in the path with `name-index`
 	**/
-	function locatePrefab(path: String) : Null<Prefab> {
+	public function locatePrefab(path: String) : Null<Prefab> {
 		if (path == null)
 			return null;
 		var parts = path.split(".");
 		var p = this;
 		while (parts.length > 0 && p != null) {
 			var name = parts.shift();
+			var subIndex = name.split("-");
+			var chooseNth = 0;
+			if (subIndex.length > 1) {
+				chooseNth = Std.parseInt(subIndex.pop()) ?? 0;
+				name = subIndex[0];
+			}
 			var found = null;
+			var currentNth = 0;
 			for (o in p.children) {
 				if (o.name == name)
 				{
-					found = o;
-					break;
+					if (currentNth == chooseNth) {
+						found = o;
+						break;
+					} else {
+						currentNth ++;
+					}
 				}
 			}
 			p = found;

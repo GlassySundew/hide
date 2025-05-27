@@ -30,6 +30,7 @@ class FiltersPopup extends hide.comp.Popup {
 					input.get(0).toggleAttribute("checked", true);
 
 				input.change((e) -> {
+					@:privateAccess editor.sceneFiltersChanged();
 					var on = !filters[typeid];
 					filters.set(typeid, on);
 
@@ -51,8 +52,8 @@ class FiltersPopup extends hide.comp.Popup {
 class PrefabSceneEditor extends hide.comp.SceneEditor {
 	var parent : Prefab;
 
-	public function new(view, data) {
-		super(view, data);
+	public function new(view) {
+		super(view);
 		parent = cast view;
 		this.localTransform = false; // TODO: Expose option
 	}
@@ -60,11 +61,6 @@ class PrefabSceneEditor extends hide.comp.SceneEditor {
 	override function update(dt) {
 		super.update(dt);
 		parent.onUpdate(dt);
-	}
-
-	override function onSceneReady() {
-		super.onSceneReady();
-		parent.onSceneReady();
 	}
 
 	override function applyTreeStyle(p: PrefabElement, el: Element, ?pname: String, ?tree: hide.comp.IconTree<PrefabElement>) {
@@ -238,7 +234,8 @@ class Prefab extends hide.view.FileView {
 	}
 
 	function createEditor() {
-		sceneEditor = new PrefabSceneEditor(this, data);
+		sceneEditor = new PrefabSceneEditor(this);
+		sceneEditor.onSceneReady = onSceneReady;
 		for (callback in sceneReadyDelayed) {
 			sceneEditor.delayReady(callback);
 		}
@@ -247,10 +244,8 @@ class Prefab extends hide.view.FileView {
 
 	override function onDisplay() {
 		if( sceneEditor != null ) sceneEditor.dispose();
-
 		createData();
 		var content = sys.io.File.getContent(getPath());
-		data = hrt.prefab.Prefab.createFromDynamic(haxe.Json.parse(content));
 		currentSign = ide.makeSignature(content);
 
 
@@ -438,6 +433,9 @@ class Prefab extends hide.view.FileView {
 	}
 
 	public function onSceneReady() {
+		data = hxd.res.Loader.currentInstance.load(state.path).toPrefab().load().clone();
+		sceneEditor.setPrefab(cast data);
+
 		refreshSceneFilters();
 		refreshGraphicsFilters();
 		refreshViewModes();
@@ -469,8 +467,12 @@ class Prefab extends hide.view.FileView {
 		toolsDefs.push({id: "", title : "", icon : "", type : Separator});
 
 		toolsDefs.push({id: "localTransformsToggle", title : "Local transforms", icon : "compass", type : Toggle((v) -> sceneEditor.localTransform = v)});
+		toolsDefs.push({id: "selfOnlyTransformsToggle", title : "Self only transforms", icon : "map-pin", type : Toggle((v) -> sceneEditor.selfOnlyTransform = v)});
 
 		toolsDefs.push({id: "", title : "", icon : "", type : Separator});
+		toolsDefs.push({id: "ruler", title : "Ruler mode", icon : "arrows-h", type : Toggle((v) -> sceneEditor.toggleRuler(v)), defaultValue: false, saveToggleState: false});
+		toolsDefs.push({id: "", title : "", icon : "", type : Separator});
+
 
 		toolsDefs.push({id: "showViewportOverlays", title : "Viewport Overlays", icon : "eye", type : Toggle((v) -> { sceneEditor.updateViewportOverlays(); }) });
 		toolsDefs.push({id: "viewportoverlays-menu", title : "", icon: "", type : Popup((e) -> new hide.comp.SceneEditor.ViewportOverlaysPopup(e, sceneEditor))});
@@ -513,7 +515,7 @@ class Prefab extends hide.view.FileView {
 		toolsDefs.push({id: "", title : "", icon : "", type : Separator});
 
 
-        toolsDefs.push({id: "help", title : "help", icon: "question", type : Popup((e) -> new hide.comp.SceneEditor.HelpPopup(e, sceneEditor))});
+      toolsDefs.push({id: "help", title : "help", icon: "question", type : Popup((e) -> new hide.comp.SceneEditor.HelpPopup(e, sceneEditor))});
 
 		toolsDefs.push({id: "", title : "", icon : "", type : Separator});
 
@@ -573,6 +575,7 @@ class Prefab extends hide.view.FileView {
 			initGraphicsFilters();
 			initSceneFilters();
 		}
+
 	}
 
 	function resetCamera( top : Bool ) {
@@ -704,8 +707,8 @@ class Prefab extends hide.view.FileView {
 	function onRefresh() {
 	}
 
-	override function onDragDrop(items : Array<String>, isDrop : Bool) {
-		return sceneEditor.onDragDrop(items, isDrop);
+	override function onDragDrop(items : Array<String>, isDrop : Bool, event: js.html.DragEvent) {
+		return sceneEditor.onDragDrop(items, isDrop, event);
 	}
 
 	function applyGraphicsFilter(typeid: String, enable: Bool) {
@@ -729,6 +732,8 @@ class Prefab extends hide.view.FileView {
 
 	function applySceneFilter(typeid: String, visible: Bool) {
 		saveDisplayState("sceneFilters/" + typeid, visible);
+		if (data == null)
+			return;
 		var all = [];
 		if (typeid != 'light')
 			all = data.findAll(hrt.prefab.Prefab, true);
@@ -788,7 +793,7 @@ class Prefab extends hide.view.FileView {
 	}
 
 	function refreshViewModes() {
-		var filters : Array<String> = ["LIT", "Full", "Albedo", "Normal", "Roughness", "Metalness", "Emissive", "AO", "Shadows", "Performance"];
+		var filters : Array<String> = ["LIT", "Full", "Albedo", "Normal", "Roughness", "Metalness", "Emissive", "AO", "Shadows", "Performance", "Velocity"];
 		viewModes = new Map();
 		for(f in filters) {
 			viewModes.set(f, false);
@@ -827,7 +832,7 @@ class Prefab extends hide.view.FileView {
 							slides.shader.mode = Metalness;
 						case "Emissive":
 							r.displayMode = Debug;
-							slides.shader.mode = Emmissive;
+							slides.shader.mode = Emissive;
 						case "AO":
 							r.displayMode = Debug;
 							slides.shader.mode = AO;
@@ -835,6 +840,8 @@ class Prefab extends hide.view.FileView {
 							r.displayMode = Debug;
 							slides.shader.mode = Shadow;
 						case "Performance":
+							r.displayMode = Performance;
+						case "Velocity":
 							r.displayMode = Performance;
 						default:
 					}
@@ -868,30 +875,11 @@ class Prefab extends hide.view.FileView {
 	}
 
 	function applySceneStyle(p: PrefabElement) {
-		var prefabView = Std.downcast(p, hrt.prefab.Prefab); // don't use "to" (Reference)
-		if( prefabView != null && prefabView.parent == null ) {
+		if( p != null && p.parent == null && p.shared.parentPrefab == null) {
 			sceneEditor.updateGrid();
 			return;
 		}
 
-		var obj3d = p.to(Object3D);
-		if(obj3d != null) {
-			var visible = obj3d.visible && !sceneEditor.isHidden(obj3d) && sceneFilters.get(p.type) != false;
-			if(visible) {
-				var cdbType = p.getCdbType();
-				if(cdbType != null && sceneFilters.get(cdbType) == false)
-					visible = false;
-			}
-			if (visible) {
-				if ((p.props:Dynamic)?.tag != null) {
-					visible = sceneFilters.get('tag:${(p.props:Dynamic).tag}') != false;
-				}
-			}
-
-			if (obj3d.local3d != null) {
-				obj3d.local3d.visible = visible;
-			}
-		}
 		var color = getDisplayColor(p);
 		if(color != null){
 			color = (color & 0xffffff) | 0xa0000000;
@@ -903,6 +891,35 @@ class Prefab extends hide.view.FileView {
 			if(poly != null) {
 				poly.setColor(color);
 			}
+		}
+
+		var obj3d = p.to(Object3D);
+		if(obj3d != null && obj3d.local3d != null) {
+			// Apply scene filters visibility first
+			var ref = Std.downcast(p, hrt.prefab.Reference);
+			if (!obj3d.visible || (sceneFilters.get(p.type) == false || (ref?.refInstance != null && sceneFilters.get(ref.refInstance.type) == false))) {
+				obj3d.local3d.visible = false;
+				return;
+			}
+
+			// Apply
+			if (sceneEditor.isHidden(obj3d)) {
+				obj3d.local3d.visible = false;
+				return;
+			}
+
+			var cdbType = p.getCdbType();
+			if(cdbType != null && sceneFilters.get(cdbType) == false) {
+				obj3d.local3d.visible = false;
+				return;
+			}
+
+			if ((p.props:Dynamic)?.tag != null) {
+				obj3d.local3d.visible = sceneFilters.get('tag:${(p.props:Dynamic).tag}') != false;
+				return;
+			}
+
+			obj3d.local3d.visible = true;
 		}
 	}
 
@@ -928,6 +945,8 @@ class Prefab extends hide.view.FileView {
 		}
 		return null;
 	}
+
+	function sceneFiltersChanged() {}
 
 	static var _ = hide.view.FileTree.registerExtension(Prefab, ["prefab"], { icon : "sitemap", createNew : "Prefab" });
 	static var _1 = hide.view.FileTree.registerExtension(Prefab, ["l3d"], { icon : "sitemap" });

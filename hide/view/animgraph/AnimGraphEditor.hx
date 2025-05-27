@@ -3,6 +3,12 @@ using Lambda;
 import hide.view.GraphInterface;
 import hrt.animgraph.*;
 
+@:structInit
+@:build(hrt.prefab.Macros.buildSerializable())
+class AnimGraphEditorPreviewState {
+    @:s public var providerIndex: Int = 0;
+}
+
 @:access(hrt.animgraph.AnimGraph)
 @:access(hrt.animgraph.AnimGraphInstance)
 @:access(hrt.animgraph.Node)
@@ -11,15 +17,17 @@ class AnimGraphEditor extends GenericGraphEditor {
     var animGraph : hrt.animgraph.AnimGraph;
     public var previewPrefab : hrt.prefab.Prefab;
 
-    var parametersList : hide.Element;
+    var parametersList : hide.comp.FancyArray<hrt.animgraph.AnimGraph.Parameter>;
     var previewAnimation : AnimGraphInstance = null;
 
     var previewNode : hrt.animgraph.nodes.AnimNode = null;
     var queuedPreview : hrt.animgraph.nodes.AnimNode = null;
 
-    var customProviderIndex : Int = 0;
+    var previewState: AnimGraphEditorPreviewState;
 
     override function reloadView() {
+        loadPreviewState();
+
         previewNode = null;
         animGraph = cast hide.Ide.inst.loadPrefab(state.path, null,  true);
 
@@ -42,21 +50,67 @@ class AnimGraphEditor extends GenericGraphEditor {
         addParameterBtn.click((e) -> {
             addParameter();
         });
-        parametersList = new Element("<ul></ul>").appendTo(parameters);
+
+        parametersList = new hide.comp.FancyArray<hrt.animgraph.AnimGraph.Parameter>(parameters, "Parameters", saveDisplayKey);
+        parametersList.getItems = () -> animGraph.parameters;
+        parametersList.getItemName = (param) -> param.name;
+        parametersList.setItemName = (param, name) -> {
+            var prev = param.name;
+            param.name = name;
+            undo.change(Field(param, "name", prev), () ->  {
+                var toRefresh = animGraph.nodes.filter((n) -> Std.downcast(n, hrt.animgraph.nodes.FloatParameter)?.parameter == param);
+                for (node in toRefresh) {
+                    graphEditor.refreshBox(node.id);
+                }
+                parametersList.refresh();
+            });
+            var toRefresh = animGraph.nodes.filter((n) -> Std.downcast(n, hrt.animgraph.nodes.FloatParameter)?.parameter == param);
+            for (node in toRefresh) {
+                graphEditor.refreshBox(node.id);
+            }
+        }
+        parametersList.reorderItem = (oldIndex: Int, newIndex: Int) -> {
+            execMoveParameterTo(oldIndex, newIndex);
+        }
+        parametersList.removeItem = (index: Int) -> {
+            execRemoveParam(index);
+        }
+        parametersList.getItemContent = (param: hrt.animgraph.AnimGraph.Parameter) -> {
+            if (previewAnimation != null) {
+                var props = new Element("<ul>");
+                var slider = new Element('<li><dd>Preview</dd><input type="range" min="-1.0" max="1.0" step="0.01" value="${param.runtimeValue}"></input></li>').appendTo(props).find("input");
+                var range = new hide.comp.Range(null,slider);
+
+                range.setOnChangeUndo(undo, () -> param.runtimeValue, (v:Float) -> {
+                    param.runtimeValue = v;
+                    var runtimeParam = previewAnimation.parameterMap.get(param.name);
+                    if (runtimeParam != null) {
+                        runtimeParam.runtimeValue = param.runtimeValue;
+                    }
+                });
+
+                var def = new Element('<li><dd>Default</dd><input type="range" min="-1.0" max="1.0" step="0.01" value="${param.defaultValue}"></input></li>').appendTo(props).find("input");
+                var range = new hide.comp.Range(null,def);
+                range.setOnChangeUndo(undo, () -> param.defaultValue, (v:Float) -> param.defaultValue = v);
+                return props;
+            }
+            return null;
+        }
 
         refreshPamamList();
 
         var dl = new Element("<dl></dl>").appendTo(propertiesContainer);
-        addAnimSetSelector(dl, undo, () -> customProviderIndex, (i: Int) -> {
-			customProviderIndex = i;
+        addAnimSetSelector(dl, {animDirectory: animGraph.animFolder, assetPath: state.path}, undo, () -> previewState.providerIndex, (i: Int) -> {
+			previewState.providerIndex = i;
+            savePreviewState();
 			refreshPreview();
 		});
 
 
-        new AnimList(propertiesContainer, null, getAnims(scenePreview, animGraph.animFolder));
+        new AnimList(propertiesContainer, null, getAnims(scenePreview, {animDirectory: animGraph.animFolder, assetPath: state.path}));
 
         graphEditor.element.get(0).addEventListener("dragover", (e: js.html.DragEvent) -> {
-            if (e.dataTransfer.types.contains("index"))
+            if (e.dataTransfer.types.contains(parametersList.getDragKeyName()))
                 e.preventDefault(); // prevent default to allow drop
 
             if (e.dataTransfer.types.contains(AnimList.dragEventKey))
@@ -69,7 +123,7 @@ class AnimGraphEditor extends GenericGraphEditor {
             // Handle drag from Parameters list
 
 
-            var paramIndex = Std.parseInt(e.dataTransfer.getData("index"));
+            var paramIndex = Std.parseInt(e.dataTransfer.getData(parametersList.getDragKeyName()));
             if (paramIndex != null) {
                 e.preventDefault();
                 var inst = new hrt.animgraph.nodes.FloatParameter();
@@ -119,14 +173,14 @@ class AnimGraphEditor extends GenericGraphEditor {
 
     }
 
-    static public function getAnims(scene: hide.comp.Scene, animDirectory: String) : Array<String> {
+    static public function getAnims(scene: hide.comp.Scene, ctx: hrt.animgraph.AnimGraph.EditorProviderContext ) : Array<String> {
         var anims : Array<String> = [];
 
         if (AnimGraph.customAnimNameLister != null) {
-            anims = anims.concat(AnimGraph.customAnimNameLister({animDirectory: animDirectory}));
+            anims = anims.concat(AnimGraph.customAnimNameLister(ctx));
         }
 
-        anims = anims.concat(scene.listAnims(animDirectory));
+        anims = anims.concat(scene.listAnims(ctx.animDirectory));
         return anims;
     }
 
@@ -177,6 +231,16 @@ class AnimGraphEditor extends GenericGraphEditor {
         return menu;
     }
 
+    public function loadPreviewState() : Void {
+        var settingsSer = haxe.Json.parse(getDisplayState("previewState") ?? "{}");
+        previewState = {};
+        @:privateAccess previewState.copyFromDynamic(settingsSer);
+    }
+
+    public function savePreviewState() : Void {
+        saveDisplayState("previewState", haxe.Json.stringify(@:privateAccess previewState.copyToDynamic({})));
+    }
+
     static public function gatherAllPreviewModels(basePath : String) : Array<String> {
         var paths = [];
 
@@ -219,13 +283,13 @@ class AnimGraphEditor extends GenericGraphEditor {
         return options;
     }
 
-    static public function addAnimSetSelector(target: Element, undo: hide.ui.UndoHistory, getIndex: () -> Int, setIndex:(Int) -> Void) {
+    static public function addAnimSetSelector(target: Element, context:hrt.animgraph.AnimGraph.EditorProviderContext, undo: hide.ui.UndoHistory, getIndex: () -> Int, setIndex:(Int) -> Void) {
         if (hrt.animgraph.AnimGraph.customEditorResolverProvider != null)
         {
             var div = new Element("<div></div>").appendTo(target);
             div.append(new Element("<dt>Anim Set</dt>"));
 
-            var providers = hrt.animgraph.AnimGraph.customEditorResolverProvider(_);
+            var providers = hrt.animgraph.AnimGraph.customEditorResolverProvider(context);
 
             var button = new hide.comp.Button(div, null, null, {hasDropdown: true});
             button.label = providers[getIndex()].name;
@@ -278,8 +342,12 @@ class AnimGraphEditor extends GenericGraphEditor {
 
             var resolver = null;
             if (AnimGraph.customEditorResolverProvider != null) {
-                var providers = AnimGraph.customEditorResolverProvider(_);
-                resolver = providers != null ? providers[customProviderIndex].resolver : null;
+                var providers = AnimGraph.customEditorResolverProvider({animDirectory: animGraph.animFolder, assetPath: state.path});
+                if (providers != null && previewState.providerIndex > providers.length) {
+                    previewState.providerIndex = 0;
+                    savePreviewState();
+                }
+                resolver = providers != null ? providers[previewState.providerIndex]?.resolver : null;
             }
             var anim = animGraph.getAnimation(previewNode, resolver);
             previewModel.playAnimation(anim);
@@ -298,133 +366,7 @@ class AnimGraphEditor extends GenericGraphEditor {
     }
 
     function refreshPamamList() {
-        parametersList.html("");
-        for (paramIndex => param in animGraph.parameters) {
-            var paramElement = new Element('<graph-parameter>
-                <header>
-                    <div class="reorder ico ico-reorder" draggable="true"></div>
-                    <div class="ico ico-chevron-down toggle-open"></div>
-                    <input type="text" value="${param.name}" class="fill"></input>
-                    <button-2 class="menu"><div class="ico ico-ellipsis-v"/></button-2>
-                </header>
-            </graph-parameter>').appendTo(parametersList);
-
-            var open : Bool = getDisplayState('param.${paramIndex}') ?? false;
-            paramElement.toggleClass("folded", open);
-
-            var name = paramElement.find("input");
-            name.on("change", (e) -> {
-                var prev = param.name;
-                var curr = name.val();
-
-                function exec(isUndo: Bool) {
-                    if (!isUndo) {
-                        param.name = curr;
-                    } else {
-                        param.name = prev;
-                    }
-                    name.val(param.name);
-                    var toRefresh = animGraph.nodes.filter((n) -> Std.downcast(n, hrt.animgraph.nodes.FloatParameter)?.parameter == param);
-                    for (node in toRefresh) {
-                        graphEditor.refreshBox(node.id);
-                    }
-                }
-
-                exec(false);
-                undo.change(Custom(exec));
-            });
-
-            name.on("contextmenu", (e) -> {
-                e.stopPropagation();
-            });
-
-            var toggleOpen = paramElement.find(".toggle-open");
-            toggleOpen.on("click", (e) -> {
-                open = !open;
-                saveDisplayState('param.${paramIndex}', open);
-                paramElement.toggleClass("folded", open);
-            });
-
-            var reorder = paramElement.find(".reorder");
-            reorder.get(0).ondragstart = (e: js.html.DragEvent) -> {
-                e.dataTransfer.setDragImage(paramElement.get(0), Std.int(paramElement.width()), 0);
-
-                e.dataTransfer.setData("index", '${paramIndex}');
-                e.dataTransfer.dropEffect = "move";
-            }
-
-            inline function isAfter(e) {
-                return e.clientY > (paramElement.offset().top + paramElement.outerHeight() / 2.0);
-            }
-
-            paramElement.get(0).addEventListener("dragover", function(e : js.html.DragEvent) {
-                if (!e.dataTransfer.types.contains("index"))
-                    return;
-                var after = isAfter(e);
-                paramElement.toggleClass("hovertop", !after);
-                paramElement.toggleClass("hoverbot", after);
-                e.preventDefault();
-            });
-
-            paramElement.get(0).addEventListener("dragleave", function(e : js.html.DragEvent) {
-                if (!e.dataTransfer.types.contains("index"))
-                    return;
-                paramElement.toggleClass("hovertop", false);
-                paramElement.toggleClass("hoverbot", false);
-            });
-
-            paramElement.get(0).addEventListener("dragenter", function(e : js.html.DragEvent) {
-                if (!e.dataTransfer.types.contains("index"))
-                    return;
-                e.preventDefault();
-            });
-
-            paramElement.get(0).addEventListener("drop", function(e : js.html.DragEvent) {
-                var toMoveIndex = Std.parseInt(e.dataTransfer.getData("index"));
-                paramElement.toggleClass("hovertop", false);
-                paramElement.toggleClass("hoverbot", false);
-                if (paramIndex == null)
-                    return;
-                var after = isAfter(e);
-                execMoveParameterTo(toMoveIndex, paramIndex, after);
-            });
-
-
-            var content = new Element("<content></content>").appendTo(paramElement);
-            var props = new Element("<ul>").appendTo(content);
-            if (previewAnimation != null) {
-                var slider = new Element('<li><dd>Preview</dd><input type="range" min="-1.0" max="1.0" step="0.01" value="${param.runtimeValue}"></input></li>').appendTo(props).find("input");
-                var range = new hide.comp.Range(null,slider);
-
-                range.setOnChangeUndo(undo, () -> param.runtimeValue, (v:Float) -> {
-                    param.runtimeValue = v;
-                    var runtimeParam = previewAnimation.parameterMap.get(param.name);
-                    if (runtimeParam != null) {
-                        runtimeParam.runtimeValue = param.runtimeValue;
-                    }
-                });
-
-                var def = new Element('<li><dd>Default</dd><input type="range" min="-1.0" max="1.0" step="0.01" value="${param.defaultValue}"></input></li>').appendTo(props).find("input");
-                var range = new hide.comp.Range(null,def);
-                range.setOnChangeUndo(undo, () -> param.defaultValue, (v:Float) -> param.defaultValue = v);
-            }
-
-            paramElement.find("header").get(0).addEventListener("contextmenu", function (e : js.html.MouseEvent) {
-                e.preventDefault();
-                hide.comp.ContextMenu.createFromEvent(e, [
-                    {label: "Delete", click: () -> execRemoveParam(paramIndex)}
-                ]);
-            });
-
-            var menu = paramElement.find(".menu");
-            menu.on("click", (e) -> {
-                e.preventDefault();
-                hide.comp.ContextMenu.createDropdown(menu.get(0), [
-                    {label: "Delete", click: () -> execRemoveParam(paramIndex)}
-                ]);
-            });
-        }
-
+        parametersList.refresh();
         scenePreview.onObjectLoaded = () -> {
             setPreview(cast animGraph.nodes.find((f) -> Std.downcast(f, hrt.animgraph.nodes.Output) != null));
         }
@@ -446,14 +388,7 @@ class AnimGraphEditor extends GenericGraphEditor {
         undo.change(Custom(exec));
     }
 
-    function execMoveParameterTo(oldIndex: Int, newIndex: Int, after: Bool) {
-        if (!after) newIndex -= 1;
-		if (oldIndex == newIndex)
-			return;
-        if (newIndex < oldIndex) {
-            newIndex += 1;
-        }
-
+    function execMoveParameterTo(oldIndex: Int, newIndex: Int) {
 		function exec(isUndo: Bool) {
             if (!isUndo) {
                 var param = animGraph.parameters.splice(oldIndex, 1)[0];
@@ -512,7 +447,7 @@ class AnimGraphEditor extends GenericGraphEditor {
         return edges.iterator();
     }
 
-    override function getAddNodesMenu():Array<AddNodeMenuEntry> {
+    override function getAddNodesMenu(currentEdge: Null<Edge>):Array<AddNodeMenuEntry> {
         var menu : Array<AddNodeMenuEntry> = [];
         for (nodeInternalName => type in hrt.animgraph.Node.registeredNodes) {
             var info = Type.createEmptyInstance(type);

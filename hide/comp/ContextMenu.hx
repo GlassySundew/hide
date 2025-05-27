@@ -270,7 +270,6 @@ class ContextMenu {
 
     function handleMovementKeys(e: js.html.KeyboardEvent) : Bool {
         if (currentSubmenu != null) {
-            trace("submenu");
             return currentSubmenu.handleMovementKeys(e);
         }
         if (e.key == "Escape") {
@@ -341,8 +340,20 @@ class ContextMenu {
             filteredItems = null;
             for (id => item in items) {
                 if (item.isSeparator) {
-                    var hr = js.Browser.document.createHRElement();
-                    menu.appendChild(hr);
+                    if (item.label != null && item.label.length > 0) {
+                        var separator = js.Browser.document.createElement("separator");
+                        var h1 = js.Browser.document.createElement("h1");
+                        h1.innerText = item.label;
+                        separator.appendChild(h1);
+
+                        var hr = js.Browser.document.createHRElement();
+                        separator.appendChild(hr);
+
+                        menu.appendChild(separator);
+                    } else {
+                        var hr = js.Browser.document.createHRElement();
+                        menu.appendChild(hr);
+                    }
                 } else {
                     //var li = js.Browser.document.createLIElement();
                     var li = createItem(item, id);
@@ -593,9 +604,6 @@ class ContextMenu {
 
             var top = menu.scrollTop;
             var bot = menu.scrollTop + menu.clientHeight;
-
-            trace(pos, top, bot);
-
 
             if (pos < top + 60) {
                 menu.scrollTo(0, pos - 60);

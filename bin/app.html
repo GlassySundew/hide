@@ -44,8 +44,6 @@
 	var amdRequire = require;
 	require = nodeRequire;
 	require.nodeRequire = require;
-	amdRequire.config({ baseUrl: 'libs/monaco/min' });
-	amdRequire(['vs/editor/editor.main'], function() { });
 </script>
 
 <xml id="mainmenu">
@@ -74,6 +72,7 @@
 		<separator></separator>
 		<menu label="About" component="hide.view.About"></menu>
 		<menu label="Debug" class="debug"></menu>
+		<menu label="Editor Gym" component="hide.view.Gym"></menu>
 	</menu>
 	<menu label="Database" class="database">
 		<menu label="View" class="dbView"></menu>
@@ -107,8 +106,9 @@
 		<div class="content">
 		</div>
 		<separator></separator>
-		<menu label="Memory profiler" class="memprof"></menu>
 		<menu label="Remote console" class="remoteconsole"></menu>
+		<menu label="Memory profiler" class="memprof"></menu>
+		<menu label="DevTools" class="devtools"></menu>
 		<menu label="Gpu mem dump" class="gpudump"></menu>
 	</menu>
 	<menu label="Settings" class="settings">
@@ -126,6 +126,17 @@
 	Reflect = global.Reflect;
 	for( f in _R )
 		Reflect[f] = _R[f];
+
+	// tmp fix jsonWorker in monaco 0.52, see https://github.com/microsoft/monaco-editor/issues/4778
+	var appPath = hide.tools.IdeData.getAppPath();
+
+	if (appPath != null && !appPath.endsWith("/")) {
+		appPath += "/";
+	}
+
+	var libPath = (appPath == null ? '' : appPath) + 'libs/monaco/min';
+	amdRequire.config({ baseUrl: libPath});
+	amdRequire(['vs/editor/editor.main'], function() { });
 </script>
 
 
@@ -137,13 +148,19 @@
 	if (file == null)
 		return;
 	var ext = file.split(".").pop().toLowerCase();
-	if( ext != "js" && ext != "css" ) return;
-	if (timer != 0)
-		clearTimeout(timer);
-	timer = setTimeout(function() {
-		reloadWatcher.close();
-		hide.Ide.inst.reload();
-	}, 1000);
+	if( ext == "js")
+	{
+		if (timer != 0)
+			clearTimeout(timer);
+		timer = setTimeout(function() {
+			reloadWatcher.close();
+			hide.Ide.inst.reload();
+		}, 1000);
+	}
+
+	if (ext == "css") {
+		hide.Ide.inst.reloadCss(file);
+	};
   });
 </script>
 

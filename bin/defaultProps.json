@@ -34,6 +34,7 @@
 	"key.paste" : "Ctrl-V",
 	"key.duplicateInPlace" : "Ctrl-D",
 	"key.debugSceneRefresh" : "Ctrl-Shift-R",
+	"key.debugSelectionRefresh" : "Shift-R",
 
 	"key.duplicate" : "Ctrl-Shift-D",
 	"key.delete" : "Delete",
@@ -45,11 +46,17 @@
 	"key.selectInvert" : "Ctrl-I",
 	"key.playPause" : "Space",
 
+	// model view
+
+	"key.model.animPrev" : "PageUp",
+	"key.model.animNext" : "PageDown",
+
 	// view keys
 
 	"key.view.fullScreen" : "F11",
 	"key.view.refresh" : "F5",
 	"key.view.refreshApp" : "Ctrl-F5",
+	"key.view.reopenLastClosedTab" : "Ctrl-Shift-T",
 
 	// File tree
 	"filetree.excludes": [
@@ -85,11 +92,13 @@
 	"key.sceneeditor.gridToggle": "G",
 	"key.sceneeditor.toggleLayout": "Tab",
 	"key.sceneeditor.gatherToMouse": "Ctrl-Shift-F",
+	"key.sceneeditor.radialViewModes": "V",
 	"key.sceneeditor.translationMode": "W",
 	"key.sceneeditor.rotationMode": "E",
 	"key.sceneeditor.scalingMode": "R",
 	"key.sceneeditor.toggleSnap": "X",
 	"key.sceneeditor.switchMode" : "Space",
+	"key.sceneeditor.ruler": "M",
 
 	"key.shadergraph.hide" : "H",
 	"key.shadergraph.comment" : "C",
@@ -163,7 +172,7 @@
 	// l3d config
 	"sceneeditor.colors": {
 	},
-	"sceneeditor.filterTypes": ["terrain", "heightmap", "model", "polygon", "box", "instance", "light", "meshSpray", "advancedDecal"],
+	"sceneeditor.filterTypes": ["terrain", "heightmap", "model", "polygon", "box", "instance", "light", "meshSpray", "advancedDecal", "fx"],
 	"sceneeditor.tags": [ { "id": "tag", "color": "#802000" } ],
 	"sceneeditor.camera.moveSpeed": 1.5,
 	"sceneeditor.gridSize": 100,

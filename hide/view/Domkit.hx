@@ -46,15 +46,13 @@ class Domkit extends FileView {
 		cssEditor.onSave = dmlEditor.onSave = paramsEditor.onSave = save;
 
 		var editors = element.find('.editors');
-		var totalWidth = editors.width();
-		var totalHeight = editors.height();
 		var panelRight = element.find('.right');
 		var panelLeft = new hide.comp.ResizablePanel(hide.comp.ResizablePanel.LayoutDirection.Horizontal, element.find('.left'), After);
 		panelLeft.onBeforeResize = () -> {
 			panelRight.width(0);
 		};
 		panelLeft.onResize = () -> {
-			panelRight.width(totalWidth - panelLeft.element.width());
+			panelRight.width(editors.width() - panelLeft.element.width());
 		};
 
 		var panelTopLeft = new hide.comp.ResizablePanel(hide.comp.ResizablePanel.LayoutDirection.Vertical, panelLeft.element.find('.top'), After);
@@ -63,17 +61,22 @@ class Domkit extends FileView {
 			panelBotLeft.height(0);
 		};
 		panelTopLeft.onResize = () -> {
-			panelBotLeft.height(totalHeight - panelTopLeft.element.height());
+			panelBotLeft.height(editors.height() - panelTopLeft.element.height());
 		};
 
 		element.find("#format").click(function(_) {
 			var dml = dmlEditor.checker.formatDML(dmlEditor.code);
-			dmlEditor.setCode(dml);
+			dmlEditor.setCode(dml, true);
 		});
 
 		// add a scene so the CssParser can resolve Tiles
 		var scene = element.find(".scene");
 		new hide.comp.Scene(config, scene, scene).onReady = function() check();
+	}
+
+	override function onResize() {
+		var editors = element.find('.editors');
+		element.find(".bot").height(editors.height() - element.find(".top").height());
 	}
 
 	function defineGlobals() {
@@ -104,6 +107,8 @@ class Domkit extends FileView {
 		var allParams = new Map();
 		dmlEditor.checker.params = allParams;
 		var comp = dmlEditor.getComponent();
+		if( comp != null && comp.classDef != null )
+			paramsEditor.checker.checker.setGlobals(comp.classDef, true);
 		paramsEditor.doCheckScript();
 		var checker = cast(paramsEditor.checker,hide.comp.DomkitEditor.DomkitChecker);
 		var tparams = try @:privateAccess checker.typeCode(paramsEditor.code,0) catch( e : hscript.Expr.Error ) null;
@@ -142,6 +147,12 @@ class Domkit extends FileView {
 		}
 		dmlEditor.check();
 		cssEditor.check();
+		var usedCDB = [];
+		for( c in checker.cdbEnums )
+			if( dmlEditor.code.indexOf(c+".") >= 0 )
+				usedCDB.push(c);
+		if( usedCDB.length > 0 )
+			checker.usedEnums.push({path:"$cdb",constrs:usedCDB});
 	}
 
 	function trimSpaces( code : String ) {
@@ -164,10 +175,11 @@ class Domkit extends FileView {
 		if( data.dml != dmlEditor.code ) dmlEditor.setCode(data.dml, true);
 		if( data.params != paramsEditor.code ) paramsEditor.setCode(data.params, true);
 		sys.io.File.saveContent(getPath(),str);
+		modified = false;
 	}
 
 	override function getDefaultContent() {
-		var tag = getPath().split("/").pop().split(".").shift();
+		var tag = getPath().split("/").pop().split(".").shift().split("_").join("-");
 		return haxe.io.Bytes.ofString('<css>\n$tag {\n}\n</css>\n<$tag>\n</$tag>');
 	}
 

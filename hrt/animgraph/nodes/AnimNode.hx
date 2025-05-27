@@ -1,6 +1,6 @@
 package hrt.animgraph.nodes;
 
-using hrt.tools.MapUtils;
+import hrt.tools.MapUtils;
 
 
 class GetBoneContext {
@@ -10,6 +10,7 @@ class GetBoneContext {
 
 	public var targetObject:h3d.scene.Object;
 	public var resolver : (path: String) -> Null<String>;
+	public var modelCache : h3d.prim.ModelCache;
 }
 
 class GetBoneTransformContext {
@@ -48,9 +49,11 @@ class GetBoneTransformContext {
 /**
 	An anim node outpus a animation that can be consumed as input parameter by other nodes
 **/
-class AnimNode extends Node {
+abstract class AnimNode extends Node {
 	var numAnimInput : Int;
 	var boneIdToAnimInputBone : Array<Int>;
+
+	var onEvent : (String) -> Void;
 
 	inline function getInputBoneId(boneId: Int, inputId: Int) {
 		return boneId * numAnimInput + inputId;
@@ -82,7 +85,7 @@ class AnimNode extends Node {
 					}
 					var animBones = anim.getBones(ctx);
 					for (name => id in animBones) {
-						var ourBoneId = boneMap.getOrPut(name, {
+						var ourBoneId = MapUtils.getOrPut(boneMap, name, {
 							currentBoneId++;
 							for (i in 0...numAnimInput) {
 								boneIdToAnimInputBone[getInputBoneId(currentBoneId, i)] = -1;
@@ -99,8 +102,11 @@ class AnimNode extends Node {
 		return boneMap;
 	}
 
-	function getBoneTransform(boneId: Int, outMatrix: h3d.Matrix, ctx: GetBoneTransformContext) : Void {
+	public function getBoneTransform(boneId: Int, outMatrix: h3d.Matrix, ctx: GetBoneTransformContext) : Void {
 	}
+
+	abstract function setupAnimEvents() : Void;
+
 
 	#if editor
 

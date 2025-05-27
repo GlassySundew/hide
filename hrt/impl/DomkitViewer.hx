@@ -11,9 +11,11 @@ import haxe.macro.Context;
 
 class DomkitViewer {
 
-	static function codeCodains( code : haxe.macro.Expr, dynParams : Map<String,Bool> ) {
+	static function codeContains( code : haxe.macro.Expr, dynParams : Map<String,Bool> ) {
 		return switch( code.expr ) {
 		case EConst(CIdent(v)) if( dynParams.exists(v) ): true;
+		case EParenthesis(e): codeContains(e,dynParams);
+		case EBinop(_,e1,e2): codeContains(e1,dynParams) || codeContains(e2,dynParams);
 		default: false;
 		}
 	}
@@ -22,18 +24,72 @@ class DomkitViewer {
 		if( m.attributes != null ) {
 			for( a in m.attributes )
 				switch( a.value ) {
-				case Code(code) if( codeCodains(code,dynParams) ):
+				case Code(code) if( codeContains(code,dynParams) ):
 					m.attributes.remove(a);
 				default:
 				}
 		}
 		if( m.children != null )
-			for( c in m.children )
+			for( c in m.children.copy() ) {
 				removeDynParamsRec(c, dynParams);
+				if( c.kind == null ) m.children.remove(c);
+			}
+		if( m.condition != null && codeContains(m.condition.cond,dynParams) )
+			m.condition = null;
+		switch( m.kind ) {
+		case For(cond) if( codeContains(cond,dynParams) ):
+			m.kind = null;
+		default:
+		}
 	}
 
-	public static function loadSource( path : String, pos : Position, fields : Array<Field> ) {
-		var name = path.split("/").pop();
+	static function clearImportNames( m : domkit.MarkupParser.Markup ) {
+		switch( m.kind ) {
+		case Node(n) if( n != null && n.indexOf(".") >= 0 ): m.kind = Node(n.split(".").pop()); // remove root.name
+		default:
+		}
+		if( m.children != null )
+			for( c in m.children )
+				clearImportNames(c);
+	}
+
+	static function remapCDBCode( map : Map<String, Bool>, code : domkit.MarkupParser.CodeExpr ) {
+		switch( code.expr ) {
+		case EConst(CIdent(name)) if( map.exists(name) ):
+			code.expr = EField({ expr : EConst(CIdent(CDB_MODULE)), pos : code.pos }, name+"Kind");
+		default:
+			haxe.macro.ExprTools.iter(code, remapCDBCode.bind(map));
+		}
+	}
+
+	static function iterCode( m : domkit.MarkupParser.Markup, f : domkit.MarkupParser.CodeExpr -> Void ) {
+		if( m.arguments != null ) {
+			for( a in m.arguments )
+				switch( a.value ) {
+				case Code(code): f(code);
+				default:
+				}
+		}
+		if( m.attributes != null ) {
+			for( a in m.attributes )
+				switch( a.value ) {
+				case Code(code): f(code);
+				default:
+				}
+		}
+		if( m.condition != null )
+			f(m.condition.cond);
+		if( m.children != null )
+			for( c in m.children )
+				iterCode(c, f);
+		switch( m.kind ) {
+		case For(cond): f(cond);
+		default:
+		}
+	}
+
+	public static function loadSource( path : String, pos : Position, fields : Array<Field>, extraParams : Array<Expr> ) {
+		var name = path.split("/").pop().split("_").join("-");
 		var dotPos = name.lastIndexOf(".");
 		if( dotPos >= 0 ) {
 			path = path.substr(0, path.length - name.length + dotPos);
@@ -43,6 +99,20 @@ class DomkitViewer {
 		var fullPath = try Context.resolvePath(path) catch( e : Dynamic ) return null;
 		if( fullPath == null )
 			return null;
+
+		var staticCSS = false;
+		var hasCSS = true;
+		while( extraParams.length > 0 ) {
+			switch( extraParams[0].expr ) {
+			case EConst(CIdent("staticCSS")): staticCSS = true;
+			case EConst(CIdent("noCSS")): hasCSS = false;
+			default:
+				Context.error("Invalid parameter", extraParams[0].pos);
+				return null;
+			}
+			extraParams.shift();
+		}
+
 		Context.registerModuleDependency(Context.getLocalModule(),fullPath);
 		var fullData = sys.io.File.getContent(fullPath);
 		var data = DomkitFile.parse(fullData);
@@ -57,14 +127,21 @@ class DomkitViewer {
 				}
 				if( c.arguments != null ) c.arguments = null;
 			}
+			var found = null;
 			for( c in m.children ) {
 				switch( c.kind ) {
 				case Node(n) if( n == name ):
-					m.children = [c];
+					found = c;
 					break;
 				default:
 				}
 			}
+			if( found == null ) {
+				Context.error("Could not find definition for component '"+name+"'", Context.currentPos());
+				return null;
+			}
+			m.children = [found];
+
 			var params = new hscript.Parser().parseString(data.params, path);
 			var dynParams = new Map();
 			var hasDynParam = false;
@@ -88,19 +165,34 @@ class DomkitViewer {
 			}
 			if( hasDynParam )
 				removeDynParamsRec(m, dynParams);
+			clearImportNames(m);
 
-			fields.push({
-				name : "__CSS",
-				access : [AStatic],
-				kind : FVar(null, macro hrt.impl.DomkitViewer.DomkitStyle.registerCSSSource($v{path})),
-				pos : pos,
-			});
+			if( data.enums != null ) {
+				var enums : Array<{ path : String, constrs : Array<String> }> = haxe.Json.parse(data.enums);
+				for( e in enums )
+					if( e.path == "$cdb" ) {
+						var map = [for( c in e.constrs ) c => true];
+						iterCode(m,remapCDBCode.bind(map));
+						break;
+					}
+			}
+
+			if( hasCSS ) {
+				fields.push({
+					name : "__CSS",
+					access : [AStatic],
+					kind : FVar(null, macro hrt.impl.DomkitViewer.DomkitStyle.registerCSSSource($v{path},$v{staticCSS?fullData:null})),
+					pos : pos,
+				});
+			}
 			return { dml : m, pos : Context.makePosition({ file : fullPath, min : index, max : index + data.dml.length }) };
 		} catch( e : domkit.Error ) {
 			Context.error(e.message, Context.makePosition({ file : fullPath, min : e.pmin, max : e.pmax }));
 			return null;
 		}
 	}
+
+	public static var CDB_MODULE = "Data";
 
 	public static function init() {
 		domkit.Macros.onSourceLoad = loadSource;
@@ -148,6 +240,7 @@ class DomkitViewer extends h2d.Object {
 	var style : DomkitStyle;
 	var current : h2d.Object;
 	var currentObj : h2d.Object;
+	var currentRoot : h2d.Object;
 	var contexts : Array<Dynamic> = [];
 	var variables : Map<String,Dynamic> = [];
 	var rebuilding = false;
@@ -169,9 +262,15 @@ class DomkitViewer extends h2d.Object {
 	}
 
 	function loadResource( res : hxd.res.Resource ) {
-		var loaded = @:privateAccess style.resources.indexOf(res) >= 0;
+		var loaded = false;
+		var path = res.entry.path;
+		for( r in @:privateAccess style.resources )
+			if( r.entry.path == path ) {
+				loaded = true;
+				break;
+			}
 		loadedResources.push({ r : res, wasLoaded: loaded });
-		if( !loaded ) style.load(res);
+		if( !loaded ) handleErrors(res, () -> style.load(res));
 		res.watch(rebuild);
 	}
 
@@ -279,7 +378,12 @@ class DomkitViewer extends h2d.Object {
 
 		unload();
 		tmpCompMap = compHooks.copy();
-		loadResource(resource);
+		try {
+			loadResource(resource);
+		}
+		catch(e: domkit.Error) {
+			style.cssParser.warnings.push({ msg : e.message, pmin : e.pmin, pmax : e.pmax });
+		}
 
 		var inf = loadComponents(resource);
 
@@ -350,7 +454,7 @@ class DomkitViewer extends h2d.Object {
 	function loadComponents( res : hxd.res.Resource ) {
 		var fullText = res.entry.getText();
 		var data = DomkitFile.parse(fullText);
-		var inf = { comps : [], params : null };
+		var inf = { comps : [], params : (null:Dynamic) };
 		handleErrors(res, function() {
 			var parser = new domkit.MarkupParser();
 			parser.allowRawText = true;
@@ -368,29 +472,65 @@ class DomkitViewer extends h2d.Object {
 					}
 				}
 			}
-			var vparams : Dynamic = evalCode(interp,eparams);
-			if( vparams != null ) {
-				for( f in Reflect.fields(vparams) ) {
-					var forceNull = res == resource && definedClasses.indexOf(f) >= 0;
-					interp.variables.set(f, forceNull ? null : Reflect.field(vparams,f));
+			var mainComp = null;
+			for( i in 0...expr.children.length ) {
+				var m = expr.children[expr.children.length - i - 1];
+				switch( m.kind ) {
+				case Node(name):
+					mainComp = domkit.Component.get(name, true);
+					break;
+				default:
 				}
 			}
+
+			var prev = interp.variables.copy();
+			var mainInst : Dynamic = null;
+			if( mainComp != null ) {
+				var cl = @:privateAccess mainComp.classValue;
+				if( cl != null ) {
+					mainInst = Type.createEmptyInstance(cl);
+					interp.setContext(mainInst);
+				}
+			}
+			var vparams = switch( eparams.e ) {
+			case EObject(fl):
+				[for( f in fl ) {
+					var val : Dynamic = evalCode(interp,f.e);
+					var forceNull = res == resource && definedClasses.indexOf(f.name) >= 0;
+					if( forceNull ) val = null;
+					interp.variables.set(f.name, val);
+					if( mainInst != null ) try Reflect.setProperty(mainInst,f.name, val) catch( e : Dynamic ) {};
+					{ name : f.name, value : val };
+				}];
+			default: throw "assert";
+			}
+			interp.variables = prev;
+			for( f in vparams )
+				interp.variables.set(f.name, f.value);
+
 			for( m in expr.children ) {
 				switch( m.kind ) {
 				case Node(name):
-					var parts = name.split(":");
-					var name = parts[0];
 					if( tmpCompMap.exists(name) )
 						error("Duplicate component "+name, m.pmin, m.pmax);
-					var parentType = parts[1] ?? "flow";
-					var compParent = resolveComponent(parentType, m.pmin);
+					var parentName = m.parent?.name ?? "flow";
+					var compParent = resolveComponent(parentName, m.pmin);
 					var comp = domkit.Component.get(name, true);
+					var inst : Dynamic = null;
 					if( comp == null ) {
 						comp = new domkit.Component(name,null,compParent);
 						domkit.CssStyle.CssData.registerComponent(comp);
 						loadedComponents.push(cast comp);
+					} else {
+						var compClass = @:privateAccess comp.classValue;
+						if( compClass != null ) {
+							inst = Type.createEmptyInstance(compClass);
+							interp.setContext(inst);
+							for( f in vparams )
+								try Reflect.setProperty(inst, f.name, f.value) catch( e : Dynamic ) {}
+						}
 					}
-					var args = [];
+					var argNames = [];
 					if( m.arguments != null ) {
 						for( arg in m.arguments ) {
 							switch( arg.value ) {
@@ -398,7 +538,7 @@ class DomkitViewer extends h2d.Object {
 								var code = parseCode(code.split(":")[0], arg.pmin);
 								switch( code.e ) {
 								case EIdent(a):
-									args.push(a);
+									argNames.push(a);
 									continue;
 								default:
 								}
@@ -407,13 +547,57 @@ class DomkitViewer extends h2d.Object {
 							error("Invalid argument decl", arg.pmin, arg.pmax);
 						}
 					}
-					var make = makeComponent.bind(res, m, comp, args, interp);
+
+					function make( args : Array<Dynamic>, parent : h2d.Object ) : h2d.Object {
+						var prev = interp.variables.copy();
+						var obj = null;
+						handleErrors(res, function() {
+
+							if( args.length > 0 && argNames.length > 0 ) {
+								for( i => arg in argNames ) {
+									interp.variables.set(arg, args[i]);
+									if( inst != null )
+										try Reflect.setProperty(inst, arg, args[i]) catch( e : Dynamic ) {};
+								}
+							}
+
+							var fmake = tmpCompMap.get(comp.parent.name);
+							if( fmake == null ) fmake = compHooks.get(comp.parent.name);
+							if( fmake == null ) {
+								fmake = comp.parent.make;
+								if( m.parent != null )
+									args = evalArgs(interp, m.parent.arguments);
+							}
+							obj = fmake(args, parent);
+							if( obj.dom == null )
+								obj.dom = new domkit.Properties(obj, cast comp);
+							else
+								@:privateAccess obj.dom.component = cast comp;
+
+							interp.variables.set("this", inst ?? obj);
+							if( inst != null )
+								inst.dom = obj.dom;
+						});
+						var prevRoot = currentRoot;
+						currentRoot = cast obj.dom.contentRoot;
+						for( c in m.children )
+							handleErrors(res, () -> addRec(c, interp, obj));
+						interp.variables = prev;
+						@:privateAccess obj.dom.contentRoot = currentRoot;
+						currentRoot = prevRoot;
+						if( inst != null )
+							inst.dom = null;
+						return obj;
+					}
+
 					tmpCompMap.set(name, make);
 					inf.comps.push(make);
 				default:
 				}
 			}
-			inf.params = vparams;
+			inf.params = {};
+			for( v in vparams )
+				Reflect.setField(inf.params, v.name, v.value);
 		});
 		return inf;
 	}
@@ -453,30 +637,8 @@ class DomkitViewer extends h2d.Object {
 		}
 	}
 
-	function makeComponent( res : hxd.res.Resource, m : Markup, comp : domkit.Component<Dynamic,Dynamic>, argNames : Array<String>, interp : DomkitInterp, args : Array<Dynamic>, parent : h2d.Object ) : h2d.Object {
-		var prev = interp.variables.copy();
-		var obj = null;
-		handleErrors(res, function() {
-			var fmake = tmpCompMap.get(comp.parent.name);
-			if( fmake == null ) fmake = compHooks.get(comp.parent.name);
-			if( fmake == null ) fmake = comp.parent.make;
-			obj = fmake(args, parent);
-			if( obj.dom == null )
-				obj.dom = new domkit.Properties(obj, cast comp);
-			else
-				@:privateAccess obj.dom.component = cast comp;
-			if( args.length > 0 && argNames.length > 0 ) {
-				for( i => arg in argNames )
-					interp.variables.set(arg, args[i]);
-			}
-		});
-		for( c in m.children )
-			handleErrors(res, () -> addRec(c, interp, obj));
-		interp.variables = prev;
-		return obj;
-	}
-
-	function resolveComponent( name : String, pmin : Int ) {
+	function resolveComponent( fullName : String, pmin : Int ) {
+		var name = fullName.split(".").pop();
 		var comp = domkit.Component.get(name, true);
 		if( comp == null ) {
 			for( path in componentsPaths ) {
@@ -496,7 +658,20 @@ class DomkitViewer extends h2d.Object {
 		return comp;
 	}
 
+	function evalArgs( interp : DomkitInterp, args : Array<domkit.MarkupParser.Argument> ) : Array<Dynamic> {
+		return [for( a in args ) {
+			var v : Dynamic = switch( a.value ) {
+			case RawValue(v): v;
+			case Code(code):
+				var code = parseCode(code, a.pmin);
+				evalCode(interp, code);
+			}
+			v;
+		}];
+	}
+
 	function addRec( e : domkit.MarkupParser.Markup, interp : DomkitInterp, parent : h2d.Object ) {
+		var parentObj = cast(parent.dom?.contentRoot,h2d.Object) ?? parent;
 		switch( e.kind ) {
 		case Node(name):
 			if( e.condition != null ) {
@@ -505,16 +680,7 @@ class DomkitViewer extends h2d.Object {
 					return;
 			}
 			var comp = resolveComponent(name, e.pmin+1);
-			var args = [for( a in e.arguments ) {
-				var v : Dynamic = switch( a.value ) {
-				case RawValue(v): v;
-				case Code(code):
-					var code = parseCode(code, a.pmin);
-					evalCode(interp, code);
-				}
-				v;
-			}];
-			var parentObj = cast(parent.dom?.contentRoot,h2d.Object) ?? parent;
+			var args = evalArgs(interp, e.arguments);
 			var make = tmpCompMap.get(comp.name);
 			var obj = make != null ? make(args, parentObj) : comp.make(args, parentObj);
 			if( obj == null )
@@ -545,6 +711,10 @@ class DomkitViewer extends h2d.Object {
 						(attributes:Dynamic).id = objId;
 					continue;
 				}
+				if( a.name == "__content__" ) {
+					currentRoot = obj;
+					continue;
+				}
 				switch( a.value ) {
 				case RawValue(v):
 					Reflect.setField(attributes,a.name,v);
@@ -571,7 +741,7 @@ class DomkitViewer extends h2d.Object {
 			for( c in e.children )
 				addRec(c, interp, cast p.contentRoot);
 		case Text(text):
-			var tf = new h2d.HtmlText(hxd.res.DefaultFont.get(), parent);
+			var tf = new h2d.HtmlText(hxd.res.DefaultFont.get(), parentObj);
 			tf.dom = domkit.Properties.create("html-text", tf);
 			tf.text = text;
 		case For(cond):
@@ -604,8 +774,13 @@ class DomkitStyle extends h2d.domkit.Style {
 	public function loadDefaults( globals : Array<hxd.res.Resource> ) {
 		for( r in globals )
 			load(r, true, true);
-		for( path in CSS_SOURCES )
-			load(hxd.res.Loader.currentInstance.load(path));
+		for( path in CSS_SOURCES ) {
+			var content = CONTENT.get(path);
+			if( content == null )
+				load(hxd.res.Loader.currentInstance.load(path));
+			else
+				load(new hxd.res.Resource(new hxd.fs.BytesFileSystem.BytesFileEntry(path,haxe.io.Bytes.ofString(content))));
+		}
 	}
 
 	override function loadData( r : hxd.res.Resource ) {
@@ -617,8 +792,12 @@ class DomkitStyle extends h2d.domkit.Style {
 	}
 
 	static var CSS_SOURCES = [];
-	public static function registerCSSSource( path : String ) {
+	static var CONTENT = new Map();
+	public static function registerCSSSource( path : String, ?content : String ) {
+		if( CSS_SOURCES.indexOf(path) >= 0 )
+			return false;
 		CSS_SOURCES.push(path);
+		if( content != null ) CONTENT.set(path, content);
 		return true;
 	}
 }

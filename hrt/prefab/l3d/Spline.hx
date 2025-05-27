@@ -14,6 +14,19 @@ enum SplineShape {
 	Cubic;
 }
 
+class SplineObject extends h3d.scene.Object {
+	public var spline : Spline;
+
+	public function new(parent: h3d.scene.Object) {
+		super(parent);
+	}
+
+	override function calcAbsPos() {
+		super.calcAbsPos();
+		@:privateAccess spline.samples = null;
+	}
+}
+
 class SplinePoint {
 	public static var DEFAULT_TAN_LENGTH = 3.0;
 
@@ -32,23 +45,34 @@ class SplinePoint {
 	}
 
 	public function save() : Dynamic {
-		var obj = {
-			x: pos.x,
-			y: pos.y,
-			z: pos.z,
-			upX: up.x,
-			upY: up.y,
-			upZ: up.z,
-			tIn: tangentIn,
-			tOut: tangentOut,
-			t: t,
-			length: length,
-		}
+		var obj: Dynamic = {}
+		obj.x = pos.x;
+		obj.y = pos.y;
+		obj.z = pos.z;
+		obj.upX = up.x;
+		obj.upY = up.y;
+		obj.upZ = up.z;
+		obj.tIn = tangentIn;
+		obj.tOut = tangentOut;
+		obj.t = t;
+		obj.length = length;
 
 		return obj;
 	}
 
 	public function load(obj : Dynamic) {
+		var splinePoint = Std.downcast(obj, SplinePoint);
+		if (splinePoint != null) {
+			pos.load(splinePoint.pos);
+			up.load(splinePoint.up);
+			tangentIn.load(splinePoint.tangentIn);
+			tangentOut.load(splinePoint.tangentOut);
+			t = splinePoint.t;
+			length = splinePoint.length;
+			return;
+		}
+
+		// Load from serialized data
 		pos = new h3d.col.Point(obj.x, obj.y, obj.z);
 		up = new h3d.col.Point(obj.upX, obj.upY, obj.upZ);
 		tangentIn = new h3d.Vector(obj.tIn.x, obj.tIn.y, obj.tIn.z);
@@ -85,10 +109,13 @@ class Spline extends hrt.prefab.Object3D {
 	var previewPoint : SplinePoint;
 	var draggedObj : { pos: h3d.Vector, type: HandleType };
 	var prevPos : h3d.Vector;
+
+	var updateScale : (dt: Float) -> Void;
 	#end
 
 	// Spline display
 	@:s public var showSpline : Bool = true;
+	@:s public var overlayGizmos : Bool = false;
 	var graphics : h3d.scene.Graphics;
 	var lineThickness : Int = 2;
 	var handlesThickness : Int = 4;
@@ -117,6 +144,7 @@ class Spline extends hrt.prefab.Object3D {
 		points = [];
 
 		// Backwards compatibility
+		var shouldRecomputeTan = false;
 		var children = Reflect.field(obj, "children");
 		if (children != null) {
 			var i = children.length - 1;
@@ -137,6 +165,7 @@ class Spline extends hrt.prefab.Object3D {
 
 					points.push(sp);
 					children.remove(children[i]);
+					shouldRecomputeTan = true;
 				}
 				i--;
 			}
@@ -166,6 +195,9 @@ class Spline extends hrt.prefab.Object3D {
 		}
 
 		shape = obj.shape == null ? Linear : SplineShape.createByIndex(obj.shape);
+
+		if (shouldRecomputeTan)
+			recomputeTangents();
 	}
 
 	override function copy(obj : hrt.prefab.Prefab) {
@@ -177,7 +209,9 @@ class Spline extends hrt.prefab.Object3D {
 
 	override function makeObject(parent3d: h3d.scene.Object) : h3d.scene.Object {
 		#if editor graphics = null; #end
-		return super.makeObject(parent3d);
+		var splineObject = new SplineObject(parent3d);
+		splineObject.spline = this;
+		return splineObject;
 	}
 
 	override function updateInstance(?propName : String ) {
@@ -188,15 +222,80 @@ class Spline extends hrt.prefab.Object3D {
 		drawSpline();
 		#end
 
+		if (propName == "overlayGizmos") {
+			graphics.material.mainPass.depth(false, overlayGizmos ? Always : LessEqual);
+
+			for (h in handles.keys())
+				h.material.mainPass.depth(false, overlayGizmos ? Always : LessEqual);
+
+			for (h in orphanHandles)
+				h.material.mainPass.depth(false, overlayGizmos ? Always : LessEqual);
+		}
+
 		var splineMeshes = findAll(SplineMesh, true);
 		for ( s in splineMeshes )
 			s.updateInstance();
 	}
 
 
+	inline public function getSplinePoint(t: Float, ?out: SplinePoint) : SplinePoint {
+		if (samples == null)
+			computeSamples();
+
+		if (samples.length <= 1)
+			return null;
+
+		t = hxd.Math.clamp(t, 0, 1);
+		var s1 = 0;
+		var sa = 0;
+		var sb = samples.length-1;
+		if( t >= 1 )
+			s1 = sb;
+		else {
+			do {
+				s1 = Math.floor((sa+sb)/2);
+				if (s1 == -1)
+					break;
+				if( samples[s1].t < t )
+					sa = s1+1;
+				else
+					sb = s1-1;
+			} while( !(samples[s1].t <= t && samples[s1+1].t >= t) );
+		}
+		var s2 : Int = s1 + 1;
+		s2 = hxd.Math.iclamp(s2, 0, samples.length - 1);
+
+		if (out == null)
+			out = new SplinePoint();
+
+		if (s1 == -1)
+			return null;
+
+		// End/Beginning of the curve, just return the point
+		if( s1 == s2 )
+			out.load(samples[s1]);
+
+		// Linear interpolation between the two samples
+		var segmentLength = samples[s1].pos.distance(samples[s2].pos);
+		if (segmentLength == 0) {
+			out.load(samples[s1]);
+		}
+		else {
+			var t = (t - samples[s1].t) / (samples[s2].t - samples[s1].t);
+			out.pos.lerp(samples[s1].pos, samples[s2].pos, t);
+			out.up.lerp(samples[s1].up, samples[s2].up, t);
+			out.tangentIn.lerp(samples[s1].tangentIn, samples[s2].tangentIn, t);
+			out.tangentOut.lerp(samples[s1].tangentOut, samples[s2].tangentOut, t);
+			out.length = hxd.Math.lerp(samples[s1].length, samples[s2].length, t);
+			out.t = hxd.Math.lerp(samples[s1].t, samples[s2].t, t);
+		}
+
+		return out;
+	}
+
 	inline public function getPoint(t: Float, ?out: h3d.col.Point) : h3d.col.Point {
 		if (samples == null)
-			sample( (this.shape == SplineShape.Linear) ? 1 : sampleResolution);
+			computeSamples();
 
 		if (samples.length <= 1)
 			return null;
@@ -246,7 +345,7 @@ class Spline extends hrt.prefab.Object3D {
 
 	inline public function getNearestPointProgressOnSpline(p: h3d.col.Point) : Float {
 		if (samples == null)
-			sample((this.shape == SplineShape.Linear) ? 1 : sampleResolution);
+			computeSamples();
 
 		var closestSq = hxd.Math.POSITIVE_INFINITY;
 		var closestT = 0.;
@@ -290,7 +389,7 @@ class Spline extends hrt.prefab.Object3D {
 
 	public function getLength() {
 		if (samples == null)
-			sample( (this.shape == SplineShape.Linear) ? 1 : sampleResolution);
+			computeSamples();
 		if (samples == null || samples.length == 0)
 			return 0.0;
 		return samples[samples.length - 1].length;
@@ -366,12 +465,33 @@ class Spline extends hrt.prefab.Object3D {
 		return point.transformed(getAbsPos(true).getInverse());
 	}
 
+	public function globalToLocalSplinePoint(sp : SplinePoint) {
+		if (sp == null)
+			return null;
+
+		var out = new SplinePoint(sp.pos, sp.up, sp.tangentIn, sp.tangentOut);
+		out.pos = localToGlobal(out.pos);
+
+		var absInv = getAbsPos(true).getInverse();
+		out.up = out.up.transformed3x3(absInv);
+		out.up.normalize();
+		out.tangentIn = out.tangentIn.transformed3x3(absInv);
+		out.tangentOut = out.tangentOut.transformed3x3(absInv);
+		return out;
+	}
+
 	public function localToGlobalSplinePoint(sp : SplinePoint) {
 		if (sp == null)
 			return null;
 
 		var out = new SplinePoint(sp.pos, sp.up, sp.tangentIn, sp.tangentOut);
 		out.pos = localToGlobal(out.pos);
+
+		var abs = getAbsPos(true);
+		out.up = out.up.transformed3x3(abs);
+		out.up.normalize();
+		out.tangentIn = out.tangentIn.transformed3x3(abs);
+		out.tangentOut = out.tangentOut.transformed3x3(abs);
 		return out;
 	}
 
@@ -389,7 +509,7 @@ class Spline extends hrt.prefab.Object3D {
 			graphics.lineStyle(lineThickness, lineColor);
 			graphics.name = "lineGraphics";
 			graphics.material.mainPass.setPassName("overlay");
-			graphics.material.mainPass.depth(false, LessEqual);
+			graphics.material.mainPass.depth(false, overlayGizmos ? Always : LessEqual);
 			graphics.ignoreParentTransform = false;
 		}
 
@@ -445,7 +565,7 @@ class Spline extends hrt.prefab.Object3D {
 				g.lineStyle(lineThickness, lineColor);
 				g.name = "handle";
 				g.material.mainPass.setPassName("overlay");
-				g.material.mainPass.depth(false, LessEqual);
+				g.material.mainPass.depth(false, overlayGizmos ? Always : LessEqual);
 				g.ignoreParentTransform = false;
 				handles.set(g, { pos: pos, type: type });
 			}
@@ -459,7 +579,7 @@ class Spline extends hrt.prefab.Object3D {
 			g.lineStyle(lineThickness, lineColor);
 			g.name = "orphan_handle";
 			g.material.mainPass.setPassName("overlay");
-			g.material.mainPass.depth(false, LessEqual);
+			g.material.mainPass.depth(false, overlayGizmos ? Always : LessEqual);
 			g.ignoreParentTransform = false;
 			orphanHandles.push(g);
 			return g;
@@ -579,6 +699,10 @@ class Spline extends hrt.prefab.Object3D {
 		return new h3d.col.Collider.GroupCollider(colliders);
 	}
 
+	function computeSamples() {
+		sample( (this.shape == SplineShape.Linear) ? 1 : sampleResolution);
+	}
+
 	function sample(numPts: Int) {
 		samples = [];
 
@@ -590,9 +714,10 @@ class Spline extends hrt.prefab.Object3D {
 		var curP = localToGlobalSplinePoint(points[0]);
 		var nextP = localToGlobalSplinePoint(points[1]);
 		var stride = 1./numPts;
+		var toCompute : Array<{ s: SplinePoint, idx: Int }> = [ { s: curP, idx: 0 } ];
 		for (i in 1...maxI + 1) {
-			for (i in 1...numPts-1) {
-				var t = stride * i;
+			for (j in 1...numPts - 1) {
+				var t = stride * j;
 				var p = getPointBetween(t, curP, nextP);
 				if (p.distance(samples[samples.length - 1].pos) >= 1./numPts) {
 					var newP = new SplinePoint();
@@ -601,14 +726,18 @@ class Spline extends hrt.prefab.Object3D {
 					newP.tangentIn = -1 * tangent;
 					newP.tangentOut = tangent;
 					samples.push(newP);
+					toCompute.push({ s: newP, idx: -1 });
 				}
 				t += stride;
 			}
 
 			samples.push(new SplinePoint(nextP.pos, nextP.up, nextP.tangentIn, nextP.tangentOut));
+			toCompute.push({ s: samples[samples.length - 1], idx: -1 });
 
 			curP = localToGlobalSplinePoint(points[i]);
 			nextP = localToGlobalSplinePoint(points[(i + 1) % points.length]);
+			if (curP != null)
+				toCompute.push({ s: curP, idx: i });
 		}
 
 		// Compute the average length of the spline
@@ -617,13 +746,21 @@ class Spline extends hrt.prefab.Object3D {
 			length += samples[i].pos.distance(samples[i+1].pos);
 
 		var l = 0.0;
-		for( i in 0 ... samples.length - 1 ) {
-			samples[i].t = l/length;
-			samples[i].length = length;
-			l += samples[i].pos.distance(samples[i+1].pos);
+		for( i in 0 ... toCompute.length - 1 ) {
+			var p = toCompute[i].idx == -1 ? toCompute[i].s : points[toCompute[i].idx];
+			p.t = l/length;
+			if (length == 0)
+				p.t = i / toCompute.length;
+			p.length = l;
+			l += toCompute[i].s.pos.distance(toCompute[i+1].s.pos);
 		}
-		samples[samples.length - 1].t = 1;
-		samples[samples.length - 1].length = length;
+
+		if (length == 0)
+			samples[samples.length - 1].t = 1;
+
+		var p = toCompute[toCompute.length - 1].idx == -1 ? toCompute[toCompute.length - 1].s : points[toCompute[toCompute.length - 1].idx];
+		p.t = 1;
+		p.length = length;
 	}
 
 
@@ -695,6 +832,7 @@ class Spline extends hrt.prefab.Object3D {
 				<dl><dt>Sample resolution</dt><dd><input type="range" field="sampleResolution" step="1"></dd></dl>
 			</div>
 			<div class="group spline-editor" name="Spline Editor">
+				<dl><dt>Overlay gizmos</dt><dd><input type="checkbox" field="overlayGizmos" class="overlay-gizmos"/></dd></dl>
 				<div align="center">
 					<input type="button" value="Edit Mode : Disabled" class="editModeButton" />
 				</div>
@@ -840,7 +978,43 @@ class Spline extends hrt.prefab.Object3D {
 		return { icon : "arrows-v", name : "Spline" };
 	}
 
+	override function makeInteractive() : hxd.SceneEvents.Interactive {
+		if(local3d == null)
+			return null;
+
+		var lineWidth = 1;
+		var colliders : Array<h3d.col.Collider> = [];
+		if (samples != null) {
+			for (sIdx in 1...samples.length) {
+				var col = new h3d.col.Bounds();
+				var s0 = samples[sIdx - 1];
+				col.addPoint(new h3d.col.Point(s0.pos.x - lineWidth, s0.pos.y, s0.pos.z));
+				col.addPoint(new h3d.col.Point(s0.pos.x + lineWidth, s0.pos.y, s0.pos.z));
+				col.addPoint(new h3d.col.Point(s0.pos.x, s0.pos.y - lineWidth, s0.pos.z));
+				col.addPoint(new h3d.col.Point(s0.pos.x, s0.pos.y + lineWidth, s0.pos.z));
+
+				var s1 = samples[sIdx];
+				col.addPoint(new h3d.col.Point(s1.pos.x - lineWidth, s1.pos.y, s1.pos.z));
+				col.addPoint(new h3d.col.Point(s1.pos.x + lineWidth, s1.pos.y, s1.pos.z));
+				col.addPoint(new h3d.col.Point(s1.pos.x, s1.pos.y - lineWidth, s1.pos.z));
+				col.addPoint(new h3d.col.Point(s1.pos.x, s1.pos.y + lineWidth, s1.pos.z));
+				colliders.push(col);
+			}
+		}
+
+		var col = new h3d.col.Collider.GroupCollider(colliders);
+
+		var int = new h3d.scene.Interactive(col, local3d);
+		int.ignoreParentTransform = true;
+		int.preciseShape = col;
+		int.propagateEvents = true;
+		int.enableRightButton = true;
+		return int;
+	}
+
 	override function setSelected(b: Bool) : Bool {
+		super.setSelected(b);
+
 		if (!b)
 			clearInteractive();
 
@@ -933,7 +1107,19 @@ class Spline extends hrt.prefab.Object3D {
 	}
 
 	function editorAddPoint(ctx: hide.prefab.EditContext, pIdx : Int) {
-		addPoint(pIdx);
+		if (pIdx >= points.length)
+			addPoint(pIdx)
+		else {
+			var prevT =  points[pIdx - 1].t;
+			var nextT = pIdx > points.length - 1 ? 0 : points[pIdx].t;
+			var inBetweenT = prevT + (nextT - prevT) / 2;
+			var p = globalToLocal(getPoint(inBetweenT));
+
+			var nextP = globalToLocal(getPoint(hxd.Math.clamp(inBetweenT + 0.1)));
+			var sp = new SplinePoint(p, null, (p - nextP) , (nextP - p));
+			addPoint(pIdx, sp);
+		}
+
 		this.updateInstance();
 		refreshHandles();
 		refreshPointList(ctx);
@@ -1179,6 +1365,24 @@ class Spline extends hrt.prefab.Object3D {
 
 		interactive.onWheel = cancelEventPropagation;
 		interactive.onMove = cancelEventPropagation;
+
+		if (updateScale == null) {
+			updateScale = function(dt) {
+				if (grid != null)
+					grid.setScale(getScaleWithCam(grid.getAbsPos().getPosition(), 70, cam));
+
+				for (h in handles.keys()) {
+					h.setScale(getScaleWithCam(h.getAbsPos().getPosition(), 70, cam));
+				}
+
+				if (previewSpline != null) {
+					for (h in previewSpline.handles.keys())
+						h.setScale(getScaleWithCam(h.getAbsPos().getPosition(), 70, cam));
+				}
+			}
+
+			ctx.addUpdate(updateScale);
+		}
 	}
 
 	function clearInteractive() {
@@ -1269,8 +1473,6 @@ class Spline extends hrt.prefab.Object3D {
 
 		grid.setPosition(center.x, center.y, center.z);
 		grid.setDirection(normal * -1.0, new h3d.Vector(0, 0, 1));
-
-		grid.setScale(getScaleWithCam(grid.getAbsPos().getPosition(), 70, cam));
 	}
 
 	function clearGrid() {

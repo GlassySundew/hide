@@ -18,6 +18,7 @@ typedef ToolDef = {
 	?iconStyle: Dynamic,
 	?rightClick : Void -> Void,
 	?defaultValue : Dynamic,
+	?saveToggleState: Bool, // default to true
 }
 
 typedef ToolToggle = {
@@ -90,11 +91,13 @@ class Toolbar extends Component {
 		if(label != null)
 			new Element('<label>$label</label>').appendTo(e);
 
-		function tog() {
+		function tog(?force: Bool) {
 			if (!canBeUntoggled && e.get(0).hasAttribute("checked"))
 				return;
 
-			e.get(0).toggleAttribute("checked");
+			var newStatus = if (force == null) !e.get(0).hasAttribute("checked") else force;
+
+			e.get(0).toggleAttribute("checked", newStatus);
 			var checked = e.get(0).hasAttribute("checked");
 
 			if (toggledIcon != null) {
@@ -122,7 +125,7 @@ class Toolbar extends Component {
 		return {
 			id : id,
 			element : e,
-			toggle : function(b) tog(),
+			toggle : function(b) tog(b),
 			isDown: function() return e.get(0).hasAttribute("checked"),
 			rightClick : function(f) {
 				e.contextmenu(function(e) { f(); e.preventDefault(); });
@@ -271,7 +274,7 @@ class Toolbar extends Component {
 				case Button(f):
 					el = addButton(tool.icon, tool.title + shortcut, f, tool.rightClick);
 				case Toggle(f):
-					var toggle = addToggle(tool.id, tool.icon, tool.title + shortcut, null, f, tool.defaultValue);
+					var toggle = addToggle(tool.id, tool.icon, tool.title + shortcut, null, f, tool.defaultValue, null, tool.saveToggleState);
 					el = toggle.element;
 					if( key != null && keys != null)
 						keys.register("sceneeditor." + tool.id, () -> toggle.toggle(!toggle.isDown()));

@@ -3,20 +3,20 @@ package hrt.shgraph;
 using hxsl.Ast;
 using Lambda;
 using hrt.shgraph.Utils;
-using hrt.tools.MapUtils;
+import hrt.tools.MapUtils;
 import hrt.shgraph.AstTools.*;
 import hrt.shgraph.ShaderGraph;
 import hrt.shgraph.ShaderNode;
 
 class NodeGenContextSubGraph extends NodeGenContext {
-	public function new(parentCtx : NodeGenContext) {
-		super(parentCtx?.domain ?? Fragment);
+	public function new(graph: ShaderGraph.Graph, parentCtx : NodeGenContext) {
+		super(graph, parentCtx?.domain ?? Fragment);
 		this.parentCtx = parentCtx;
 	}
 
 	override function getGlobalInput(id: Variables.Global) : TExpr {
 		var global = Variables.Globals[id];
-		var info = globalInVars.getOrPut(Variables.getFullPath(global), {type: global.type, id: inputCount++});
+		var info = MapUtils.getOrPut(globalInVars, Variables.getFullPath(global), {type: global.type, id: inputCount++});
 		return parentCtx?.nodeInputExprs[info.id] ?? parentCtx?.getGlobalInput(id) ?? super.getGlobalInput(id);
 	}
 
@@ -33,7 +33,7 @@ class NodeGenContextSubGraph extends NodeGenContext {
 		if (outputCount == 0 && parentCtx != null) {
 			parentCtx.addPreview(expr);
 		}
-		var info = globalOutVars.getOrPut(Variables.getFullPath(global), {type: global.type, id: outputCount ++});
+		var info = MapUtils.getOrPut(globalOutVars, Variables.getFullPath(global), {type: global.type, id: outputCount ++});
 		if (parentCtx != null) {
 			parentCtx.setOutput(info.id, expr);
 		} else {
@@ -42,7 +42,7 @@ class NodeGenContextSubGraph extends NodeGenContext {
 	}
 
 	override  function getGlobalParam(name: String, type: Type) : TExpr {
-		var info = globalInVars.getOrPut(name, {type: type, id: inputCount ++});
+		var info = MapUtils.getOrPut(globalInVars, name, {type: type, id: inputCount ++});
 		return parentCtx?.nodeInputExprs[info.id] ?? parentCtx?.getGlobalParam(name, type) ?? super.getGlobalParam(name, type);
 	}
 
@@ -50,7 +50,7 @@ class NodeGenContextSubGraph extends NodeGenContext {
 		if (outputCount == 0 && parentCtx != null) {
 			parentCtx.addPreview(expr);
 		}
-		var info = globalOutVars.getOrPut(name, {type : expr.t, id: outputCount ++});
+		var info = MapUtils.getOrPut(globalOutVars, name, {type : expr.t, id: outputCount ++});
 		if (parentCtx != null) {
 			parentCtx.setOutput(info.id, expr);
 		} else {
@@ -77,9 +77,11 @@ class NodeGenContext {
 	// Pour les rares nodes qui ont besoin de differencier entre vertex et fragment
 	public var domain : ShaderGraph.Domain;
 	public var previewDomain: ShaderGraph.Domain = null;
+	public var graph: ShaderGraph.Graph = null;
 
-	public function new(domain: ShaderGraph.Domain) {
+	public function new(graph: ShaderGraph.Graph, domain: ShaderGraph.Domain) {
 		this.domain = domain;
+		this.graph = graph;
 	}
 
 	// For general input/output of the shader graph. Allocate a new global var if name is not found,
@@ -113,12 +115,27 @@ class NodeGenContext {
 	}
 
 	public function getGlobalParam(name: String, type: Type) : TExpr {
-		return makeVar(globalVars.getOrPut(name, {v: {id: hxsl.Ast.Tools.allocVarId(), name: name, type: type, kind: Param}, defValue:null, __init__: null}).v);
+		return makeVar(MapUtils.getOrPut(globalVars, name, {v: {id: hxsl.Ast.Tools.allocVarId(), name: name, type: type, kind: Param}, defValue:null, __init__: null}).v);
 	}
 
 	public function setGlobalCustomOutput(name: String, expr: TExpr) : Void {
-		var v = makeVar(globalVars.getOrPut(name, {v: {id: hxsl.Ast.Tools.allocVarId(), name: name, type: expr.t, kind: Param}, defValue:null, __init__: null}).v);
+		var v = makeVar(MapUtils.getOrPut(globalVars, name, {v: {id: hxsl.Ast.Tools.allocVarId(), name: name, type: expr.t, kind: Param}, defValue:null, __init__: null}).v);
 		expressions.push(makeAssign(v, expr));
+	}
+
+	public function getShaderVariable(id: Int, init: TExpr = null) : TVar {
+		var graphVar = graph.parent.variables[id];
+		var type = ShaderGraph.sgTypeToType(graphVar.type);
+		var variable = MapUtils.getOrPut(shaderVariables, id, {
+			var varId = hxsl.Ast.Tools.allocVarId();
+			var name = if (graphVar.isGlobal) graphVar.name else '_local_${graphVar.name}_$varId';
+			{variable: {id: varId, name: name, type: type, kind: Local}, isInit: false}
+		});
+		if (init != null && !variable.isInit) {
+			variable.isInit = true;
+			addExpr(AstTools.makeAssign(AstTools.makeVar(variable.variable), init));
+		}
+		return variable.variable;
 	}
 
 	function getOrAllocateFromTVar(tvar: TVar) : TVar {
@@ -180,7 +197,7 @@ class NodeGenContext {
 						var p = Variables.Globals[parent];
 						switch (p.varkind) {
 							case KVar(kind, _, _):
-								v.parent = globalVars.getOrPut(Variables.getFullPath(p), {v : {id : hxsl.Ast.Tools.allocVarId(), name: p.name, type: TStruct([]), kind: kind}, defValue: null, __init__: null}).v;
+								v.parent = MapUtils.getOrPut(globalVars, Variables.getFullPath(p), {v : {id : hxsl.Ast.Tools.allocVarId(), name: p.name, type: TStruct([]), kind: kind}, defValue: null, __init__: null}).v;
 							default:
 								throw "Parent var must be a KVar";
 						}
@@ -276,6 +293,12 @@ class NodeGenContext {
 		throw "unreachable";
 	}
 
+	public function addFunction(e: TFunction) {
+		if (functions.get(e.ref.id) == null) {
+			functions.set(e.ref.id, e);
+		}
+	}
+
 	public function addExpr(e: TExpr) {
 		expressions.push(e);
 	}
@@ -355,6 +378,7 @@ class NodeGenContext {
 
 	var currentPreviewId: Int = -1;
 	var expressions: Array<TExpr> = [];
+	var functions: Map<Int, TFunction> = [];
 	var outputs: Array<TExpr> = [];
 	var preview : TExpr = null;
 	var nodeOutputInfo: Array<OutputInfo>;
@@ -365,4 +389,5 @@ class NodeGenContext {
 
 	var nodeInputInfo : Array<InputInfo>;
 	var globalVars: Map<String, ShaderGraph.ExternVarDef> = [];
+	var shaderVariables: Map<Int, {variable: TVar, isInit: Bool}> = [];
 }

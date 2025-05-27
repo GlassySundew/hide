@@ -19,7 +19,7 @@ class FXAnimation extends h3d.scene.Object {
 	public var duration : Float;
 
 
-	/** Enable automatic culling based on `cullingRadius` and `cullingDistance`. Will override `culled` on every sync. **/
+		/** Enable automatic culling based on `cullingRadius` and `cullingDistance`. Will override `culled` on every sync. **/
 	public var autoCull(default, set) = true;
 	public var cullingRadius : Float;
 	public var cullingDistance = defaultCullingDistance;
@@ -53,19 +53,15 @@ class FXAnimation extends h3d.scene.Object {
 		if(root == null)
 			root = def;
 
-		for (shaderTarget in def.flatten(hrt.prefab.fx.ShaderTarget))
+		for (shaderTarget in def.flatten(hrt.prefab.fx.ShaderTarget)) {
+			if (!shaderTarget.enabled)
+				continue;
 			shaderTarget.applyShaderTarget(def, shaderTarget.target);
+		}
 
 		initObjAnimations(root);
 		initEmitters(root);
-		hrt.prefab.fx.BaseFX.BaseFXTools.getCustomAnimations(root, customAnims, null);
-		if(customAnims.length == 0) customAnims = null;
-		else {
-			for (a in customAnims) {
-				a.parameters = evaluator.parameters;
-			}
-		}
-
+		updateCustomAnims(root);
 
 		events = initEvents(root, events);
 		var root = hrt.prefab.fx.BaseFX.BaseFXTools.getFXRoot(def);
@@ -93,6 +89,19 @@ class FXAnimation extends h3d.scene.Object {
 			for(c in findAll(o -> Std.downcast(o, FXAnimation))) {
 				if(c != this)
 					c.reset();
+			}
+		}
+	}
+
+	public function updateCustomAnims(root : Prefab) {
+		if (customAnims == null)
+			customAnims = [];
+		hrt.prefab.fx.BaseFX.BaseFXTools.getCustomAnimations(root, customAnims, null);
+		if(customAnims.length == 0)
+			customAnims = null;
+		else {
+			for (a in customAnims) {
+				a.parameters = evaluator.parameters;
 			}
 		}
 	}
@@ -210,8 +219,12 @@ class FXAnimation extends h3d.scene.Object {
 			}
 		}
 
-		if( finishedPlaying && onEnd != null )
-			onEnd();  // Delay until after syncRec, to avoid calling syncRec on children
+		if(finishedPlaying) {
+			Event.stopAllEvents(events);
+			if (onEnd != null ) {
+				onEnd();  // Delay until after syncRec, to avoid calling syncRec on children
+			}
+		}
 
 		firstSync = false;
 		ctx.visibleFlag = old;
@@ -365,17 +378,17 @@ class FXAnimation extends h3d.scene.Object {
 			}
 		}
 
-		Event.updateEvents(events, time, prevTime);
+		Event.updateEvents(events, time, prevTime, duration);
 
 		this.prevTime = localTime;
 	}
 
 	function initEvents(elt: PrefabElement, ?out : Array<Event.EventInstance> ) : Array<Event.EventInstance> {
-		if (elt == null || @:privateAccess !elt.shouldBeInstanciated())
+		if (elt == null || @:privateAccess !elt.shouldBeInstanciated() || elt.findFirstLocal3d() == null)
 			return out;
 
-		var asEvent = elt.to(Event);
-		if (asEvent != null) {
+		if( Std.isOfType(elt, IEvent) ) {
+			var asEvent = cast(elt, IEvent);
 			var eventObj = asEvent.prepare();
 			if(eventObj != null) {
 				if(out == null) out = [];
@@ -386,8 +399,11 @@ class FXAnimation extends h3d.scene.Object {
 		var sub = Std.downcast(elt, SubFX);
 		if (sub != null) {
 			var eventLen = out?.length ?? 0;
-			out = initEvents(sub.refInstance, out);
-			Std.downcast(sub.refInstance.findFirstLocal3d(), FXAnimation).events = null;
+			out = initEvents(@:privateAccess sub.resolveRef(), out);
+			var fxAnimation = Std.downcast(sub.refInstance.findFirstLocal3d(), FXAnimation);
+			if (fxAnimation != null) {
+				fxAnimation.events = null;
+			}
 			if (out != null) {
 				// Offset the start time of the events that were added to our array in
 				// init events

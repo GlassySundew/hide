@@ -45,42 +45,33 @@ typedef EditorSheetProps = {
 	var ?categories : Array<String>;
 }
 
-typedef SearchFilter = {
-	var text: String;
-	var isExpr: Bool;
-}
-
 @:allow(hide.comp.cdb)
 class Editor extends Component {
-
+	static var CLIPBOARD_PREFIX = "[CDB_FORMAT]";
 	static var COMPARISON_EXPR_CHARS = ["!=", ">=", "<=", "==", "<", ">"];
+
 	var base : cdb.Database;
 	var currentSheet : cdb.Sheet;
 	var existsCache : Map<String,{ t : Float, r : Bool }> = new Map();
 	var tables : Array<Table> = [];
-	var searchBox : Element;
-	var searchHidden : Bool = true;
-	var searchExp : Bool = false;
 	var pendingSearchRefresh : haxe.Timer = null;
 	var displayMode : Table.DisplayMode;
-	var clipboard : {
-		text : String,
-		data : Array<{}>,
-		schema : Array<cdb.Data.Column>,
-	};
 	var changesDepth : Int = 0;
-	var currentFilters : Array<SearchFilter> = [];
 	var api : EditorApi;
 	var undoState : Array<UndoState> = [];
 	var currentValue : Any;
 	var cdbTable : hide.view.CdbTable;
+
+	var searchBox : Element;
+	var searchHidden : Bool = true; // Search through hidden categories
+	var searchExp : Bool = false; // Does filters are parsed by hscript parser
+	var filters : Array<String> = [];
+
 	public var view : cdb.DiffFile.ConfigView;
 	public var config : hide.Config;
 	public var cursor : Cursor;
 	public var keys : hide.ui.Keys;
 	public var undo : hide.ui.UndoHistory;
-	public var cursorStates : Array<UndoState> = [];
-	public var cursorIndex : Int = 0;
 	public var formulas : Formulas;
 	public var showGUIDs = false;
 
@@ -129,6 +120,7 @@ class Editor extends Component {
 
 		keys.clear();
 		keys.addListener(onKey);
+		keys.register("view.reopenLastClosedTab", function() ide.reopenLastClosedTab());
 		keys.register("search", function() {
 			searchBox.show();
 			searchBox.find("input").val("").focus().select();
@@ -139,10 +131,14 @@ class Editor extends Component {
 		keys.register("cdb.showReferences", () -> showReferences());
 		keys.register("undo", function() undo.undo());
 		keys.register("redo", function() undo.redo());
-		keys.register("cdb.moveBack", () -> cursorJump(true));
-		keys.register("cdb.moveAhead", () -> cursorJump(false));
-		keys.register("cdb.insertLine", function() { insertLine(cursor.table,cursor.y); cursor.move(0,1,false,false); });
-		keys.register("duplicate", function() { duplicateLine(cursor.table,cursor.y); cursor.move(0,1,false,false); });
+		keys.register("cdb.moveBack", () -> cursor.jump(true));
+		keys.register("cdb.moveAhead", () -> cursor.jump(false));
+		keys.register("cdb.insertLine", function() {
+			cursor.table.insertLine(cursor.y);
+			if (cursor.table.displayMode != Properties)
+				cursor.move(0,1,false,false,false);
+		});
+		keys.register("duplicate", function() { cursor.table.duplicateLine(cursor.y); cursor.move(0,1,false,false,false); });
 		for( k in ["cdb.editCell","rename"] )
 			keys.register(k, function() {
 				var c = cursor.getCell();
@@ -150,26 +146,39 @@ class Editor extends Component {
 			});
 		keys.register("cdb.closeList", function() {
 			var c = cursor.getCell();
+			var l = cursor.getLine();
+
 			var sub = Std.downcast(c == null ? cursor.table : c.table, SubTable);
+			if (sub == null)
+				sub = (c != null && c.line.subTable != null && c.line.subTable.cell == c) ? c.line.subTable : null;
+
 			if( sub != null ) {
 				sub.cell.elementHtml.click();
 				return;
 			}
-			if( cursor.select != null ) {
-				cursor.select = null;
+			if( cursor.selection != null ) {
+				cursor.selection = null;
+				if (c != null)
+					cursor.addElementToSelection(c.table, c.line, c.columnIndex, c.line.index);
+				else if (l != null)
+					cursor.addElementToSelection(l.table, l, -1, l.index);
 				cursor.update();
 			}
 		});
 		keys.register("cdb.gotoReference", () -> gotoReference(cursor.getCell()));
-		keys.register("cdb.globalSeek", () -> new GlobalSeek(cdbTable.element, cdbTable, Sheets, currentSheet));
+		keys.register("cdb.globalSeek", () -> {
+			if (this.displayMode == Table.DisplayMode.AllProperties)
+				return;
+			new GlobalSeek(cdbTable.element, cdbTable, Sheets, currentSheet);
+		});
 		keys.register("cdb.sheetSeekIds", () -> new GlobalSeek(cdbTable.element, cdbTable, LocalIds, currentSheet));
 		keys.register("cdb.globalSeekIds", () -> new GlobalSeek(cdbTable.element, cdbTable, GlobalIds, currentSheet));
 
 		base = sheet.base;
 		if( cursor == null )
 			cursor = new Cursor(this);
-		else if ( !tables.contains(cursor.table) )
-			cursor.set();
+		// else if ( !tables.contains(cursor.table) ) //TODO(lv): needed ?
+		// 	cursor.set();
 		if( displayMode == null ) displayMode = Table;
 		DataFiles.load();
 		if( currentValue == null ) currentValue = api.copy();
@@ -179,53 +188,97 @@ class Editor extends Component {
 	function onMouseDown( e : hide.Element.Event ) {
 		switch ( e.which ) {
 		case 4:
-			cursorJump(true);
+			cursor.jump(true);
 			return false;
 		case 5:
-			cursorJump(false);
+			cursor.jump(false);
 			return false;
 		}
 		return true;
 	}
 
 	function onKey( e : hide.Element.Event ) {
-		if( e.altKey )
-			return false;
 		var isRepeat: Bool = untyped e.originalEvent.repeat;
 		switch( e.keyCode ) {
 		case K.LEFT:
-			cursor.move( -1, 0, e.shiftKey, e.ctrlKey);
+			if (e.altKey) {
+				cursor.jump(true);
+				return true;
+			}
+			cursor.move( -1, 0, e.shiftKey, e.ctrlKey, e.altKey);
 			return true;
 		case K.RIGHT:
-			cursor.move( 1, 0, e.shiftKey, e.ctrlKey);
+			if (e.altKey) {
+				cursor.jump(false);
+				return true;
+			}
+			cursor.move( 1, 0, e.shiftKey, e.ctrlKey, e.altKey);
 			return true;
 		case K.UP:
-			cursor.move( 0, -1, e.shiftKey, e.ctrlKey);
+			cursor.move( 0, -1, e.shiftKey, e.ctrlKey, e.altKey);
 			return true;
 		case K.DOWN:
-			cursor.move( 0, 1, e.shiftKey, e.ctrlKey);
+			cursor.move( 0, 1, e.shiftKey, e.ctrlKey, e.altKey);
 			return true;
 		case K.TAB:
 			cursor.move( e.shiftKey ? -1 : 1, 0, false, false, true);
 			return true;
 		case K.PGUP:
-			cursor.move(0, -10, e.shiftKey, e.ctrlKey);
+			var scrollView = element.parent(".hide-scroll");
+			var stickyElHeight = scrollView.find(".separator").height();
+			if (Math.isNaN(stickyElHeight))
+				stickyElHeight = scrollView.find("thead").outerHeight();
+			else
+				stickyElHeight += scrollView.find("thead").outerHeight();
+
+			var lines = scrollView.find("tbody").find(".start");
+			var idx = lines.length - 1;
+			while (idx >= 0) {
+				var b = lines[idx].getBoundingClientRect();
+				if (b.top <= stickyElHeight)
+					break;
+				idx--;
+			}
+
+			cursor.setDefault(cursor.table, cursor.x, idx);
+			lines.get(idx).scrollIntoView({ block: js.html.ScrollLogicalPosition.END });
+
+			// Handle sticky elements
+			scrollView.scrollTop(scrollView.scrollTop() + scrollView.parent().siblings(".tabs-header").outerHeight());
+
 			return true;
 		case K.PGDOWN:
-			cursor.move(0, 10, e.shiftKey, e.ctrlKey);
+			var scrollView = element.parent(".hide-scroll");
+			var height = scrollView.outerHeight() - (scrollView.find("thead").outerHeight() + scrollView.parent().siblings(".tabs-header").outerHeight());
+			var lines = scrollView.find("tbody").find(".start");
+			var idx = 0;
+			for (el in lines) {
+				var b = el.getBoundingClientRect();
+				if (b.top >= height)
+					break;
+				idx++;
+			}
+
+			if (idx > lines.length - 1)
+				idx = lines.length - 1;
+			lines.get(idx).scrollIntoView(true);
+			cursor.setDefault(cursor.table, cursor.x, idx);
+
+			// Handle sticky elements
+			var sepHeight = scrollView.find(".separator").height();
+			if (Math.isNaN(sepHeight))
+				sepHeight = 0;
+			scrollView.scrollTop(scrollView.scrollTop() - (scrollView.find("thead").height() + sepHeight));
+
 			return true;
 		case K.SPACE:
 			e.preventDefault(); // prevent scroll
 		case K.ESCAPE:
-			if (!isRepeat) {
-				if( currentFilters.length > 0 ) {
-					searchFilter([]);
-				}
-
-				if (searchBox != null && searchBox.is(":visible")) {
-					searchBox.hide();
-					refresh();
-				}
+			var c = cursor.getCell();
+			var sub = Std.downcast(c == null ? cursor.table : c.table, SubTable); // Prevent closing search filter befor closing list
+			if (sub == null && !isRepeat && searchBox != null && searchBox.is(":visible")) {
+				searchBox.find(".close-search").click();
+				return true;
 			}
 		}
 		return false;
@@ -234,252 +287,160 @@ class Editor extends Component {
 	public dynamic function onScriptCtrlS() {
 	}
 
-	public function updateFilter() {
-		if (currentFilters.length > 0)
-			searchFilter(currentFilters, false);
+
+	public function updateFilters() {
+		if (filters.length > 0)
+			searchFilter(filters, false);
 	}
 
-	public function setFilter( f : SearchFilter ) {
-		if( searchBox != null ) {
-			if( f == null )
-				searchBox.hide();
-			else {
-				searchBox.show();
-				searchBox.find("input").val(f.text);
-			}
-		}
-		if ( f == null )
-			searchFilter([]);
-		else
-			searchFilter([f]);
-	}
-
-	function searchFilter( filters : Array<SearchFilter>, updateCursor=true ) {
-		while( filters.indexOf(null) >= 0 )
-			filters.remove(null);
-		for (f in filters) {
-			if (f.text == "")
-				filters.remove(f);
-		}
-		for (f in filters) {
-			if (f.text == null)
-				filters.remove(f);
-		}
-
-		function matches(haysack: String, needle: String) {
-			return haysack.indexOf(needle) >= 0;
-		}
-
+	function searchFilter( newFilters : Array<String>, updateCursor : Bool = true ) {
 		function removeAccents(str: String) {
 			var t = untyped str.toLowerCase().normalize('NFD');
 			return ~/[\u0300-\u036f]/g.map(t, (r) -> "");
 		}
 
-		var all = element.find("table.cdb-sheet > tbody > tr");
-		if( config.get("cdb.filterIgnoreSublist") )
-			all = element.find("> table.cdb-sheet > tbody > tr");
+		// Clean new filters
+		var idx = newFilters.length;
+		while (idx >= 0) {
+			if (newFilters[idx] == null || newFilters[idx] == "")
+				newFilters.remove(newFilters[idx]);
 
-		all.removeClass("filtered");
-
-		if (searchExp)
-			all = all.not(".head").not(".list").not("props"); // remove potential opened list or properties
-
-		var seps = all.filter(".separator");
-		var lines = all.not(".separator");
-
-		var parser = new hscript.Parser();
-		parser.allowMetadata = true;
-		parser.allowTypes = true;
-		parser.allowJSON = true;
-
-		var interp = new hscript.Interp();
-
-		var sheetNames = new Map();
-		for( s in this.base.sheets )
-			sheetNames.set(Formulas.getTypeName(s), s);
-
-		function replaceRec( e : hscript.Expr ) {
-			switch( e.e ) {
-			case EField({ e : EIdent(s) }, name) if( sheetNames.exists(s) ):
-				if( sheetNames.get(s).idCol != null )
-					e.e = EConst(CString(name)); // replace for faster eval
-			default:
-				hscript.Tools.iter(e, replaceRec);
-			}
+			idx--;
 		}
 
-		if( filters.length > 0 ) {
-			if (searchHidden) {
-				var currentTable = tables.filter((t) -> t.sheet == currentSheet)[0];
-				for (l in currentTable.lines) {
-					if (l.element.hasClass("hidden"))
-						l.create();
+		filters = newFilters;
+
+		var table = tables.filter((t) -> t.sheet == currentSheet)[0];
+		if (filters.length <= 0) @:privateAccess {
+			if (table.lines != null) {
+				for (l in table.lines)
+					l.element.removeClass("filtered");
+			}
+			if (table.separators != null) {
+				for (s in table.separators) {
+					s.filtered = false;
+					s.refresh(false);
+				}
+			}
+			searchBox.find("#results").text('No results');
+			return;
+		}
+
+		var isFiltered : (line: Dynamic) -> Bool;
+		if (searchExp) {
+			var parser = new hscript.Parser();
+			parser.allowMetadata = true;
+			parser.allowTypes = true;
+			parser.allowJSON = true;
+
+			var sheetNames = new Map();
+				for( s in this.base.sheets )
+					sheetNames.set(Formulas.getTypeName(s), s);
+
+			function replaceRec( e : hscript.Expr ) {
+				switch( e.e ) {
+				case EField({ e : EIdent(s) }, name) if( sheetNames.exists(s) ):
+					if( sheetNames.get(s).idCol != null )
+						e.e = EConst(CString(name)); // replace for faster eval
+				default:
+					hscript.Tools.iter(e, replaceRec);
 				}
 			}
 
-			// There is two types of search :
-			// Expression search : hscript parser on search expression
-			// Litteral search : litteral text search
-			if (searchExp) {
-				this.formulas.evaluateAll(this.currentSheet.realSheet);
+			var interp = new hscript.Interp();
+			this.formulas.evaluateAll(this.currentSheet.realSheet);
 
-				for (idx => l in currentSheet.lines) {
-					@:privateAccess interp.resetVariables();
-					@:privateAccess interp.initOps();
+			isFiltered = function(line: Dynamic) {
+				@:privateAccess interp.resetVariables();
+				@:privateAccess interp.initOps();
 
-					interp.variables.set("Math", Math);
+				interp.variables.set("Math", Math);
 
-					// Need deep copy here, not ideal but works
-					var cloned = haxe.Json.parse(haxe.Json.stringify(l));
-					for (f in Reflect.fields(cloned))
-						interp.variables.set(f, Reflect.getProperty(cloned, f));
-
-					function addFilter() {
-						var lineEl = lines.eq(idx);
-						lineEl.addClass("filtered");
-
-						var nextTr = lineEl.next('tr');
-						if (nextTr.is(".props") || nextTr.is(".list"))
-							nextTr.addClass("filtered");
-					}
-
-					// Check if the current line is filtered or not
-					var filtered = true;
-					for (f in filters) {
-						var input = f.text;
-						var expr = try parser.parseString(input) catch( e : Dynamic ) { addFilter(); continue; }
-						replaceRec(expr);
-
-						var res = try interp.execute(expr) catch( e : hscript.Expr.Error ) { addFilter(); continue; } // Catch errors that can be thrown if search input text is not interpretabled
-						if (res) {
-							filtered = false;
+				// Need deep copy here, not ideal but works
+				var cloned = haxe.Json.parse(haxe.Json.stringify(table.sheet.lines[line.index]));
+				for (f in Reflect.fields(cloned)) {
+					var c = table.columns[0];
+					for (col in table.columns) {
+						if (col.name == f) {
+							c = col;
 							break;
 						}
 					}
 
-					if (filtered)
-						addFilter();
+					switch(c.type) {
+						case cdb.Data.ColumnType.TEnum(e):
+							interp.variables.set(f, e[Reflect.getProperty(cloned, f)]);
+						default:
+							interp.variables.set(f, Reflect.getProperty(cloned, f));
+					}
 				}
-			}
-			else {
-				var f_Filters = new Array<SearchFilter>();
-				for( i in 0...filters.length )
-					f_Filters.push({text:removeAccents(filters[i].text), isExpr:false});
 
-				for( t in lines ) {
-					var content = removeAccents(t.textContent);
-					if( !f_Filters.any(f -> matches(content, f.text.toLowerCase())) )
-						t.classList.add("filtered");
-				}
-			}
+				// Check if the current line is filtered or not
+				for (f in filters) {
+					var expr = try parser.parseString(f) catch( e : Dynamic ) { return true; }
+					replaceRec(expr);
 
-			for( t in lines ) {
-				var l = new Element(t);
-				var parent: Element = l.data("parent-tr");
-				if( parent != null ) {
-					var f = parent.hasClass("filtered") && l.hasClass("filtered");
-					l.toggleClass("filtered", f);
-					parent.toggleClass("filtered", f);
+					var res = try interp.execute(expr) catch( e : hscript.Expr.Error ) { return true; } // Catch errors that can be thrown if search input text is not interpretabled
+					if (res)
+						return false;
 				}
-			}
 
-			all = all.not(".filtered");
-			if (!searchHidden)
-				all = all.not(".hidden");
-			for( s in seps.elements() ) {
-				var idx = all.index(s);
-				if( idx == all.length - 1 || new Element(all.get(idx+1)).hasClass("separator") ) {
-					s.addClass("filtered");
-				}
+				return true;
+			}
+		}
+		else {
+			isFiltered = function(line: hide.comp.cdb.Line) {
+				var content = removeAccents(line.element.get(0).textContent);
+				for (f in filters)
+					if (content.indexOf(removeAccents(f)) >= 0)
+						return false;
+
+				return true;
 			}
 		}
 
-		currentFilters = filters;
+		// Create hidden lines to ensure they are take into account while searching
+		if (searchHidden) {
+			for (l in table.lines) {
+				if (l.element.hasClass("hidden"))
+					l.create();
+			}
+		}
+
+		for (s in @:privateAccess table.separators)
+			@:privateAccess s.filtered = true;
+
+		var results = 0;
+		for (l in table.lines) {
+			var filtered = isFiltered(l);
+			l.element.toggleClass("filtered", filtered);
+			if (!filtered) {
+				results++;
+				var seps = Separator.getParentSeparators(l.index, @:privateAccess table.separators);
+				for (s in seps)
+					@:privateAccess s.filtered = false;
+			}
+			else {
+				if (l.subTable != null)
+					l.subTable.immediateClose();
+			}
+		}
+
+		for (s in @:privateAccess table.separators)
+			s.refresh(false);
+
+		// Force show lines that are not filtered (even if their parent sep is collapsed)
+		for (l in table.lines) {
+			if (l.element.hasClass("hidden") && !l.element.hasClass("filtered"))
+				l.create();
+		}
+
+		searchBox.find("#results").text(results > 0 ? '$results Results' : 'No results');
+
 		if (updateCursor)
 			cursor.update();
 	}
 
-	function onCopy() {
-		var sel = cursor.getSelection();
-		if( sel == null )
-			return;
-		var data = [];
-		var isProps = (cursor.table.displayMode != Table);
-		var schema;
-		function saveValue(out, obj, c) {
-			var form = @:privateAccess formulas.getFormulaNameFromValue(obj, c);
-			if( form != null ) {
-				Reflect.setField(out, c.name+"__f", form);
-				return;
-			}
-
-			var v = Reflect.field(obj, c.name);
-			if( v != null )
-				Reflect.setField(out, c.name, v);
-		}
-		if( isProps ) {
-			schema = [];
-			var out = {};
-			for( y in sel.y1...sel.y2+1 ) {
-				var line = cursor.table.lines[y];
-				var obj = line.obj;
-				var c = line.columns[0];
-
-				saveValue(out, obj, c);
-				schema.push(c);
-			}
-			data.push(out);
-
-		} else {
-			for( y in sel.y1...sel.y2+1 ) {
-				var obj = cursor.table.lines[y].obj;
-				var out = {};
-				for( x in sel.x1...sel.x2+1 ) {
-					var c = cursor.table.columns[x];
-					saveValue(out, obj, c);
-
-				}
-				data.push(out);
-			}
-			schema = [for( x in sel.x1...sel.x2+1 ) cursor.table.columns[x]];
-		}
-
-		// In case we only have one value, just copy the cell value
-		if (data.length == 1 && Reflect.fields(data[0]).length == 1) {
-			var colName = Reflect.fields(data[0])[0];
-			var col = cursor.table.columns.find((c) -> c.name == colName);
-			if (col == null)
-				throw "unknown column";
-
-			// if we are a property or a list, fallback to the default case
-			if (col.type != TProperties && col.type != TList) {
-				var escape = switch(col.type) {
-					case TGradient, TCurve:
-						true;
-					default:
-						false;
-				};
-
-				var str = cursor.table.sheet.colToString(col, Reflect.field(data[0], colName), escape);
-
-				clipboard = {
-					data : data,
-					text : str,
-					schema : schema,
-				};
-
-				ide.setClipboard(str);
-				return;
-			}
-		}
-		// copy many values at once
-		clipboard = {
-			data : data,
-			text : Std.string([for( o in data ) cursor.table.sheet.objToString(o,true)]),
-			schema : schema,
-		};
-		ide.setClipboard(clipboard.text);
-	}
 
 	function stringToCol(str : String) : Null<Int> {
 		str = str.toUpperCase();
@@ -550,61 +511,135 @@ class Editor extends Component {
 			table.refresh();
 	}
 
-	function onPaste() {
-		var text = ide.getClipboard();
+	function onCopy() {
+		if( cursor.selection == null )
+			return;
 
+		function saveValue(out: Dynamic, obj: Dynamic, c: cdb.Data.Column) {
+			var form = @:privateAccess formulas.getFormulaNameFromValue(obj, c);
+			if( form != null ) {
+				Reflect.setField(out, c.name+"__f", form);
+				return;
+			}
+
+			var v = Reflect.field(obj, c.name);
+			if( v != null )
+				Reflect.setField(out, c.name, v);
+		}
+
+		var data = [];
+		var schema = [];
+		for (sel in cursor.selection) {
+			for( y in sel.y1...sel.y2+1 ) {
+				var out = {};
+				var obj = cursor.table.lines[y].obj;
+				var start = sel.x1;
+				var end = sel.x2 + 1;
+				if (start < 0) {
+					start = 0;
+					end = cursor.table.columns.length;
+				}
+
+				for( x in start...end ) {
+					var c = cursor.table.columns[x];
+					saveValue(out, obj, c);
+					schema.pushUnique(c);
+				}
+				data.push(out);
+			}
+		}
+
+		// We're writting data format infos in Rtf MIME field because customs MIME types
+		// aren't allowed anymore
+		var rtfText = '${CLIPBOARD_PREFIX}${haxe.Json.stringify({data: data, schema: schema})}';
+
+		// Plain text will contain only text value of cells
+		var plainText = "";
+		for (cell in cursor.getSelectedCells())
+			plainText += (plainText != "" ? " " : "") + Std.string(cell.value);
+
+		ide.setClipboardMultiple([
+			{ type: nw.Clipboard.ClipboardType.Text, data: plainText },
+			{ type:nw.Clipboard.ClipboardType.Rtf, data: rtfText }
+		]);
+	}
+
+	function onPaste() {
 		if (this.cursor.table == null)
 			return;
 
-		var columns = cursor.table.columns;
-		var sheet = cursor.table.sheet;
-		var realSheet = cursor.table.getRealSheet();
-		var allLines = cursor.table.lines;
+		var cdbDataText = ide.getClipboard(nw.Clipboard.ClipboardType.Rtf);
+		if (cdbDataText.indexOf(CLIPBOARD_PREFIX) >= 0)
+			cdbDataText = StringTools.replace(cdbDataText, CLIPBOARD_PREFIX, "");
+		else
+			cdbDataText = null; // Rtf data has been set by another application OR data in the plain text clipboard isn't comming from cdb
 
-		var fullRefresh = false;
+		var cdbData = cdbDataText != null ? haxe.Json.parse(cdbDataText) : null;
+		var data : Array<Dynamic> = cdbData?.data;
+		var schema : Array<cdb.Data.Column> = cdbData?.schema;
+
+		// Hack to force col.type to be an enum value
+		if (schema != null)
+			for (s in schema) {
+				var params = [];
+				for (f in Reflect.fields(s.type)) {
+					if (f.indexOf("_") >= 0)
+						continue;
+
+					params.push(Reflect.field(s.type, f));
+				}
+
+				if (params.length == 0)
+					params = null;
+
+				s.type = cdb.Data.ColumnType.createByName(s.type.getName(), params);
+			}
+
 		var toRefresh : Array<Cell> = [];
+		var shouldFullRefresh = false;
 
-		var isProps = (cursor.table.displayMode != Table);
-		var x1 = cursor.x;
-		var y1 = cursor.y;
-		var x2 = cursor.select == null ? x1 : cursor.select.x;
-		var y2 = cursor.select == null ? y1 : cursor.select.y;
-		if( x1 > x2 ) {
-			var tmp = x1;
-			x1 = x2;
-			x2 = tmp;
-		}
-		if( y1 > y2 ) {
-			var tmp = y1;
-			y1 = y2;
-			y2 = tmp;
+		var targetCells = cursor.getSelectedCells();
+		var targetSheet = cursor.table.sheet;
+
+		function refresh() {
+			formulas.evaluateAll(targetSheet.realSheet);
+			if (targetSheet.realSheet.parent == null)
+				targetSheet.realSheet.sync();
+			if (shouldFullRefresh) {
+				refreshAll();
+			}
+			else {
+				for (c in toRefresh)
+					c.refresh(true);
+			}
+			refreshRefs();
 		}
 
-		if( clipboard == null || text != clipboard.text ) {
-			if( cursor.x < 0 || cursor.y < 0 ) return;
-			function parseText(text, type : cdb.Data.ColumnType) : Dynamic {
+		// We are trying to paste value copied from outisde CDB into CDB
+		if (schema == null || data == null) {
+			function parseCDBValue(v: String, type: cdb.Data.ColumnType) : Dynamic {
 				switch( type ) {
 				case TId:
-					if( ~/^[A-Za-z0-9_]+$/.match(text) )
-						return text;
+					if( ~/^[A-Za-z0-9_]+$/.match(v) )
+						return v;
 				case TString:
-					return text;
+					return v;
 				case TFile:
-					return ide.makeRelative(text);
+					return ide.makeRelative(v);
 				case TInt:
-					text = text.split(",").join("").split(" ").join("");
-					return Std.parseInt(text);
+					v = v.split(",").join("").split(" ").join("");
+					return Std.parseInt(v);
 				case TFloat:
-					text = text.split(",").join("").split(" ").join("");
-					var value = Std.parseFloat(text);
+					v = v.split(",").join("").split(" ").join("");
+					var value = Std.parseFloat(v);
 					if( Math.isNaN(value) )
 						return null;
 					return value;
 				case TColor:
-					return stringToCol(text);
+					return stringToCol(v);
 				case TGradient:
 					try {
-						var json = haxe.Json.parse(text);
+						var json = haxe.Json.parse(v);
 						var grad : cdb.Types.Gradient = {colors: [], positions: []};
 						if (Reflect.hasField(json, "stops")) {
 							for (i => stop in (json.stops: Array<Dynamic>)) {
@@ -626,53 +661,30 @@ class Editor extends Component {
 				return null;
 			}
 
-			if( isProps ) {
-				var line = cursor.getLine();
-				toRefresh.push(cursor.getCell());
-				var col = line.columns[x1];
-				var p = Editor.getColumnProps(col);
+			var plainText = ide.getClipboard(nw.Clipboard.ClipboardType.Text);
 
-				if( !cursor.table.canEditColumn(col.name) || p.copyPasteImmutable)
-					return;
+			beginChanges();
+			for (c in targetCells) {
+				var col = c.column;
+				if (!c.table.canEditColumn(col.name) || Editor.getColumnProps(col).copyPasteImmutable)
+					continue;
 
-				var value = parseText(text, col.type);
-				if( value == null )
-					return;
-				beginChanges();
-				var obj = line.obj;
-				formulas.removeFromValue(obj, col);
-				Reflect.setField(obj, col.name, value);
-			} else {
-				beginChanges();
-				for( x in x1...x2+1 ) {
-					var col = columns[x];
-					var p = Editor.getColumnProps(col);
-					if( !cursor.table.canEditColumn(col.name) || p.copyPasteImmutable)
-						continue;
-					var lines = y1 == y2 ? [text] : text.split("\n");
-					for( y in y1...y2+1 ) {
-						var text = lines[y - y1];
-						if( text == null ) text = lines[lines.length - 1];
-						var value = parseText(text, col.type);
-						if( value == null ) continue;
-						var obj = sheet.lines[y];
-						formulas.removeFromValue(obj, col);
-						Reflect.setField(obj, col.name, value);
-						toRefresh.push(allLines[y].cells[x]);
-					}
-				}
+				var parsedValue = parseCDBValue(plainText, col.type);
+				if (parsedValue == null)
+					continue;
+
+				Reflect.setField(c.line.obj, col.name, parsedValue);
+				toRefresh.push(c);
 			}
-			formulas.evaluateAll(realSheet);
+
 			endChanges();
-			realSheet.sync();
-			for( c in toRefresh ) {
-				c.refresh(true);
-			}
-			refreshRefs();
+			refresh();
 			return;
 		}
 
-		function setValue(cliObj, destObj, clipSchema : cdb.Data.Column, destCol : cdb.Data.Column) {
+
+		function setValue(cliObj : Dynamic, destObj : Dynamic, clipSchema : cdb.Data.Column, destCol : cdb.Data.Column) {
+			var sheet = targetSheet;
 			var form = Reflect.field(cliObj, clipSchema.name+"__f");
 
 			if( form != null && destCol.type.equals(clipSchema.type) ) {
@@ -718,89 +730,95 @@ class Editor extends Component {
 				Reflect.setField(destObj, destCol.name, v);
 		}
 
-		var posX = x1 < 0 ? 0 : x1;
-		var posY = y1 < 0 ? 0 : y1;
-		var data = clipboard.data;
-		if( data.length == 0 )
-			return;
-
-		if( isProps ) {
-			var obj1 = data[0];
-			var obj2 = cursor.getLine().obj;
-			if( clipboard.schema.length == 1 ) {
-				var line = cursor.getLine();
-				var destCol = line.columns[posX];
-				var p = Editor.getColumnProps(destCol);
-				var clipSchema = clipboard.schema[0];
-				if( clipSchema == null || destCol == null)
-					return;
-				if( !cursor.table.canEditColumn(destCol.name) || p.copyPasteImmutable)
-					return;
-				toRefresh.push(cursor.getCell());
-				beginChanges();
-				setValue(obj1, obj2, clipSchema, destCol);
-			} else {
-				beginChanges();
-				for( c1 in clipboard.schema ) {
-					var c2 = cursor.table.sheet.columns.find(c -> c.name == c1.name);
-					var p = Editor.getColumnProps(c2);
-					if( c2 == null || !cursor.table.canEditColumn(c2.name) || p.copyPasteImmutable)
-						continue;
-					if( !cursor.table.canInsert() && c2.opt && !Reflect.hasField(obj2, c2.name) )
-						continue;
-					setValue(obj1, obj2, c1, c2);
-					fullRefresh = true;
-				}
-			}
-		} else {
+		// Manage pasting one value into several cells
+		if (data.length == 1) {
 			beginChanges();
-			if( data.length == 1 && y1 != y2 )
-				data = [for( i in y1...y2+1 ) data[0]];
-			for( obj1 in data ) {
-				if( posY == sheet.lines.length ) {
-					if( !cursor.table.canInsert() ) break;
-					sheet.newLine();
-					fullRefresh = true;
-				}
-				var obj2 = sheet.lines[posY];
-				for( cid in 0...clipboard.schema.length ) {
-					var c1 = clipboard.schema[cid];
-					var c2 = columns[cid + posX];
-					if( c2 == null ) continue;
-					var p = Editor.getColumnProps(c2);
 
-					if( !cursor.table.canEditColumn(c2.name) || p.copyPasteImmutable)
+			// We copied one cell
+			if (schema.length == 1) {
+				for (c in targetCells) {
+					var col = c.column;
+					if (!c.table.canEditColumn(col.name) || Editor.getColumnProps(col).copyPasteImmutable)
 						continue;
-
-					setValue(obj1, obj2, c1, c2);
-
-					if( c2.type == TList || c2.type == TProperties )
-						fullRefresh = true;
-					if( !fullRefresh )
-						toRefresh.push(allLines[posY].cells[cid + posX]);
+					setValue(data[0], c.line.obj, schema[0], col);
+					toRefresh.push(c);
 				}
-				posY++;
 			}
+			else {
+				// We copied one line (could be several cells of one line)
+				var targetLines = cursor.getSelectedLines();
+				if (targetLines.length == 0) {
+					for (c in targetCells)
+						targetLines.pushUnique(c.line);
+				}
+
+				for (l in targetLines) {
+					for (c in l.cells) {
+						var col = c.column;
+						if (!l.table.canEditColumn(col.name) || Editor.getColumnProps(col).copyPasteImmutable || !Reflect.hasField(data[0], col.name))
+							continue;
+
+						var sc = schema[0];
+						for (s in schema)
+							if (col.type.equals(s.type) && col.name == s.name)
+								sc = s;
+
+						setValue(data[0], c.line.obj, sc, col);
+						toRefresh.push(c);
+					}
+				}
+			}
+
+			endChanges();
+			refresh();
+			return;
 		}
-		formulas.evaluateAll(realSheet);
+
+
+		beginChanges();
+		var curPosY = Std.int(Math.max(0, cursor.y));
+		var curPosX = Std.int(Math.max(0, cursor.x));
+		for (d in data) {
+			// Insert lines if we still got data to paste and that we are at the end of the sheet
+			if ( curPosY == targetSheet.lines.length ) {
+				if( !cursor.table.canInsert() ) break;
+				targetSheet.newLine();
+				shouldFullRefresh = true;
+			}
+
+			var obj = targetSheet.lines[curPosY];
+			for( cid in 0...schema.length ) {
+				var c1 = schema[cid];
+				var c2 = cursor.table.columns[cid + curPosX];
+				if( c2 == null ) continue;
+				var p = Editor.getColumnProps(c2);
+
+				if( !cursor.table.canEditColumn(c2.name) || p.copyPasteImmutable)
+					continue;
+
+				setValue(d, obj, c1, c2);
+
+				if( c2.type == TList || c2.type == TProperties )
+					shouldFullRefresh = true;
+				if( !shouldFullRefresh )
+					toRefresh.push(cursor.table.lines[curPosY].cells[cid + curPosX]);
+			}
+			curPosY++;
+		}
+
+		refresh();
 		endChanges();
-		realSheet.sync();
-		if( fullRefresh )
-			refreshAll();
-		else {
-			for( c in toRefresh ) {
-				c.refresh(true);
-			}
-			refreshRefs();
-		}
 	}
 
 	function onDelete() {
-		var sel = cursor.getSelection();
-		if( sel == null )
+		if( cursor.selection == null )
 			return;
 
-		delete(sel.x1, sel.x2, sel.y1, sel.y2);
+		beginChanges();
+		cursor.selection.sort((el1, el2) -> { return el1.y1 == el2.y1 ? 0 : el1.y1 < el2.y1 ? 1 : -1; });
+		for (s in cursor.selection)
+			delete(s.x1, s.x2, s.y1, s.y2);
+		endChanges();
 	}
 
 	function delete(x1 : Int, x2 : Int, y1 : Int, y2 : Int) {
@@ -838,7 +856,7 @@ class Editor extends Component {
 				y--;
 			}
 
-			cursor.set(cursor.table, -1, y1, null, false);
+			cursor.set(cursor.table, -1, y1, null, true, true, false);
 		}
 		else {
 			// delete cells
@@ -862,10 +880,8 @@ class Editor extends Component {
 		}
 
 		endChanges();
-		cursor.table.getRealSheet().sync();
-		for (t in modifiedTables)
-			t.refresh();
-		updateFilter();
+		refreshAll();
+		updateFilters();
 	}
 
 	public function changeObject( line : Line, column : cdb.Data.Column, value : Dynamic ) {
@@ -975,7 +991,6 @@ class Editor extends Component {
 				currentValue = newValue;
 				currentSheet = newSheet;
 			}
-			pushCursorState();
 			api.load(currentValue);
 			DataFiles.save(true); // save reloaded data
 			element.removeClass("is-cdb-editor");
@@ -1008,7 +1023,7 @@ class Editor extends Component {
 				runningHooks = true;
 				ide.runCommand(commands[i], (e) -> {
 					if (e != null) {
-						ide.error('Hook error:\n$e');
+						ide.quickError('Hook error:\n$e');
 						hookEnd();
 					} else {
 						if (i < commands.length - 1) {
@@ -1027,97 +1042,6 @@ class Editor extends Component {
 				}
 			}
 		}
-	}
-
-
-	function undoStatesEqual( s1 : UndoState, s2 : UndoState, cmpCursors = true ) {
-		function cursorEqual(c1 : Cursor.CursorState, c2 : Cursor.CursorState) {
-			if( c1 == c2 )
-				return true;
-			if( c1 == null || c2 == null )
-				return false;
-			return c1.sheet == c2.sheet && c1.x == c2.x && c1.y == c2.y;
-		}
-		function undoSheetEqual(s1 : UndoSheet, s2 : UndoSheet) {
-			if( s1.parent == null && s2.parent == null )
-				return s1.sheet == s2.sheet;
-			if( s1.parent == null || s2.parent == null )
-				return false;
-			if ( s1.sheet != s2.sheet || s1.parent.column != s2.parent.column || s1.parent.line != s2.parent.line )
-				return false;
-			return undoSheetEqual(s1.parent.sheet, s2.parent.sheet);
-		}
-		if ( s1.sheet != s2.sheet )
-			return false;
-		if( s1.tables.length != s2.tables.length )
-			return false;
-		for( i in 0...s1.tables.length ) {
-			if( !undoSheetEqual(s1.tables[i], s2.tables[i]) )
-				return false;
-		}
-		if( !cmpCursors )
-			return true;
-		if( cursorEqual(s1.cursor, s2.cursor) )
-			return true;
-		if( s1.cursor == null || s2.cursor == null )
-			return false;
-		return s1.cursor.y == -1 && s2.cursor.y == -1;
-	}
-
-	public function pushCursorState() {
-		if ( cursor == null )
-			return;
-		var state = getState();
-		state.data = null;
-
-		var stateBehind = (cursorStates.length <= 0) ? null : cursorStates[cursorIndex];
-		if( stateBehind != null && undoStatesEqual(state, stateBehind) )
-			return;
-		var stateAhead = (cursorStates.length <= 0 || cursorIndex >= cursorStates.length - 1) ? null : cursorStates[cursorIndex + 1];
-		if ( stateAhead != null && undoStatesEqual(state, stateAhead) ) {
-			cursorIndex++;
-			return;
-		}
-
-		if( cursorIndex < cursorStates.length - 1 && cursorIndex >= 0 ) {
-			cursorStates.splice(cursorIndex + 1, cursorStates.length);
-		}
-
-		cursorStates.push(state);
-		if( cursorIndex < cursorStates.length - 1 )
-			cursorIndex++;
-	}
-
-	function cursorJump(back = true) {
-		focus();
-
-		if( (back && cursorIndex <= 0) || (!back && cursorIndex >= cursorStates.length - 1) )
-			return;
-		if( back && cursorIndex == cursorStates.length - 1)
-			pushCursorState();
-
-		if(back)
-			cursorIndex--;
-		else
-			cursorIndex++;
-
-		var state = cursorStates[cursorIndex];
-		syncSheet(null, state.sheet);
-
-		if( undoStatesEqual(state, getState(), false) ) {
-			setState(state, true);
-			if( cursor.table != null ) {
-				for( t in tables ) {
-					if( t.sheet.getPath() == cursor.table.sheet.getPath() )
-						cursor.table = t;
-				}
-			}
-		} else
-			refresh(state);
-
-		if( cdbTable != null )
-			@:privateAccess cdbTable.syncTabs();
-		haxe.Timer.delay(() -> cursor.update(), 1); // scroll
 	}
 
 	public static var inRefreshAll(default,null) : Bool;
@@ -1260,7 +1184,7 @@ class Editor extends Component {
 				var spaces = "[ \\n\\t]";
 				var prevChars = ",\\(:=\\?\\[|";
 				var postChars = ",\\):;\\?\\]&|";
-				var regexp = new EReg('((case$spaces+)|[$prevChars])$spaces*$id$spaces*[$postChars]*.*',"");
+				var regexp = new EReg('((return$spaces+)|(case$spaces+)|[$prevChars])$spaces*$id$spaces*[$postChars]*.*',"");
 				var regall = new EReg("\\b"+id+"\\b", "");
 
 				var tableName = sheet.name;
@@ -1554,120 +1478,6 @@ class Editor extends Component {
 		element.empty();
 		element.addClass('cdb');
 
-		var filters: Array<SearchFilter> = [];
-
-		searchBox = new Element('<div><div class="input-col"><div class="input-cont"/></div></div>').addClass("searchBox").appendTo(element);
-		var inputCont = searchBox.find(".input-cont");
-		var inputCol = searchBox.find(".input-col");
-
-		function removeSearchInput() {
-			if( filters.length > 1 ) {
-				inputCont.find("input").last().remove();
-				filters.pop();
-				searchFilter(filters.copy());
-				inputCol.find(".remove-btn").toggleClass("hidden", filters.length <= 1);
-			}
-		}
-
-		function addSearchInput() {
-			var index = filters.length;
-			filters.push({text:"", isExpr: false});
-
-			var searchBar = new Element("<input type='text' class='search-bar-cdb'></input>").appendTo(inputCont).keydown(function(e) {
-				if( e.keyCode == 27 ) {
-					searchBox.find("i.close-search").click();
-					return;
-				} else if( e.keyCode == 9 && index == filters.length - 1) {
-					addSearchInput();
-					return;
-				}
-			}).keyup(function(e) {
-				// If user input a comaprison character, switch to expression mode for
-				// the current filter
-				for (c in Editor.COMPARISON_EXPR_CHARS) {
-					if (StringTools.contains(Element.getVal(e.getThis()), c) && !searchExp) {
-						searchExp = true;
-						var searchTypeBtn = searchBox.find(".search-type");
-						searchTypeBtn.toggleClass("fa-superscript", searchExp);
-						searchTypeBtn.toggleClass("fa-font", !searchExp);
-						updateFilter();
-						break;
-					}
-				}
-
-				filters[index].text = Element.getVal(e.getThis());
-				filters[index].isExpr = e.getThis().next().hasClass("fa-superscript");
-
-				// Slow table refresh protection
-				if (currentSheet.lines.length > 300) {
-					if (pendingSearchRefresh != null) {
-						pendingSearchRefresh.stop();
-					}
-					pendingSearchRefresh = haxe.Timer.delay(function()
-						{
-							searchFilter(filters.copy());
-							pendingSearchRefresh = null;
-						}, 500);
-				}
-				else {
-					searchFilter(filters.copy());
-				}
-			});
-
-			inputCol.find(".remove-btn").toggleClass("hidden", filters.length <= 1);
-		}
-
-		var searchTypeButton = new Element("<i>").addClass("search-type fa fa-font").appendTo(searchBox);
-		searchTypeButton.attr("title", "Switch to litteral search or expression search");
-
-		searchTypeButton.click(function(_) {
-			searchExp = !searchExp;
-			searchTypeButton.toggleClass("fa-superscript", searchExp);
-			searchTypeButton.toggleClass("fa-font", !searchExp);
-			updateFilter();
-		});
-
-		var hideButton = new Element("<i>").addClass("fa fa-eye").appendTo(searchBox);
-		hideButton.attr("title", "Search through hidden categories");
-
-		hideButton.click(function(_) {
-			searchHidden = !searchHidden;
-			hideButton.toggleClass("fa-eye", searchHidden);
-			hideButton.toggleClass("fa-eye-slash", !searchHidden);
-			if (!searchHidden) {
-				var hiddenSeps = element.find("table.cdb-sheet > tbody > tr").not(".head").filter(".separator").filter(".sep-hidden").find("a.toggle");
-				hiddenSeps.click();
-				hiddenSeps.click();
-			}
-			updateFilter();
-		});
-
-		new Element("<i>").addClass("close-search ico ico-times-circle").appendTo(searchBox).click(function(_) {
-			searchFilter([]);
-			searchBox.find(".search-bar-cdb").not(':first').remove();
-			searchBox.find(".expr-btn").not(':first').remove();
-			currentFilters.clear();
-			filters.clear();
-			filters.push({text: "", isExpr: false});
-			if(searchBox.find(".expr-btn").hasClass("fa-superscript"))
-				searchBox.find(".expr-btn").removeClass("fa-superscript").addClass("fa-font");
-			searchBox.toggle();
-			var c = cursor.save();
-			focus();
-			cursor.load(c);
-			var hiddenSeps = element.find("table.cdb-sheet > tbody > tr").not(".head").filter(".separator").filter(".sep-hidden").find("a.toggle");
-			hiddenSeps.click();
-			hiddenSeps.click();
-		});
-
-		new Element("<i>").addClass("add-btn ico ico-plus").appendTo(inputCol).click(function(_) {
-			addSearchInput();
-		});
-		new Element("<i>").addClass("remove-btn ico ico-minus").appendTo(inputCol).click(function(_) {
-			removeSearchInput();
-		});
-		addSearchInput();
-
 		formulas = new Formulas(this);
 		formulas.evaluateAll(currentSheet.realSheet);
 
@@ -1685,20 +1495,142 @@ class Editor extends Component {
 			cursor.update();
 		}
 
-		if( currentFilters.length > 0 ) {
-			updateFilter();
-			searchBox.show();
-			for( i in filters.length...currentFilters.length )
-				addSearchInput();
-			if( filters.length <= currentFilters.length ) {
-				var inputs = inputCont.find("input");
-				#if js
-				for( i in 0...inputs.length ) {
-					var input: js.html.InputElement = cast inputs[i];
-					input.value = currentFilters[i].text;
-				}
-				#end
+		// Setup for search bar
+		searchBox = new Element('<div>
+			<div class="buttons">
+				<div class="btn add-btn ico ico-plus" title="Add filter"></div>
+				<div class="btn remove-btn ico ico-minus" title="Remove filter"></div>
+			</div>
+			<div class="input-col">
+				<div class="input-cont"/>
+					<input type="text" class="search-bar-cdb"></input>
+				</div>
+			</div>
+			<p id="results">No results</p>
+			<div class="btn search-type fa fa-font" title="Change search type"></div>
+			<div class="btn search-hidden fa fa-eye" title="Search through hidden categories"></div>
+			<div class="btn close-search ico ico-close" title="Close (Escape)"></div>
+		</div>').addClass("search-box").appendTo(element);
+		searchBox.hide();
+
+		function search(e: js.jquery.Event) {
+			// Close search with escape
+			if( e.keyCode == K.ESCAPE ) {
+				searchBox.find(".close-search").click();
+				return;
 			}
+
+			// Change to expresion mode if we detect an expression character in the search (qol)
+			for (c in Editor.COMPARISON_EXPR_CHARS) {
+				if (StringTools.contains(Element.getVal(e.getThis()), c) && !searchExp) {
+					searchExp = true;
+					var searchTypeBtn = searchBox.find(".search-type");
+					searchTypeBtn.toggleClass("fa-superscript", searchExp);
+					searchTypeBtn.toggleClass("fa-font", !searchExp);
+					updateFilters();
+					break;
+				}
+			}
+
+			var index = e.getThis().parent().find('.search-bar-cdb').index(e.getThis());
+			if (filters[index] == null)
+				filters[index] = "";
+
+			filters[index] = Element.getVal(e.getThis());
+
+			// Slow table refresh protection
+			if (currentSheet.lines.length > 300) {
+				if (pendingSearchRefresh != null) {
+					pendingSearchRefresh.stop();
+				}
+				pendingSearchRefresh = haxe.Timer.delay(function()
+					{
+						searchFilter(filters.copy());
+						pendingSearchRefresh = null;
+					}, 500);
+			}
+			else {
+				searchFilter(filters.copy());
+			}
+		}
+
+		var inputs = searchBox.find(".search-bar-cdb");
+		inputs.attr("placeholder", "Find");
+		inputs.keyup(search);
+
+		var inputCont = searchBox.find(".input-cont");
+
+		searchBox.find(".add-btn").click(function(_) {
+			var newInput = new Element('<input type="text" class="search-bar-cdb"></input>');
+			newInput.attr("placeholder", "Find");
+			newInput.appendTo(searchBox.find(".input-cont"));
+			newInput.css({"margin-top": "2px"});
+			updateFilters();
+			searchBox.find(".remove-btn").show();
+		});
+
+		searchBox.find(".remove-btn").hide();
+		searchBox.find(".remove-btn").click(function(_) {
+			var searchBars = inputCont.find(".search-bar-cdb");
+			if( searchBars.length > 1 ) {
+				searchBars.last().remove();
+				filters.pop();
+				searchFilter(filters.copy());
+
+				if (filters.length <= 1)
+					searchBox.find(".remove-btn").hide();
+			}
+		});
+
+		searchBox.find(".close-search").click(function(_) {
+			searchFilter([]);
+			searchBox.find(".search-bar-cdb").not(':first').remove();
+			searchBox.find(".expr-btn").not(':first').remove();
+			filters.clear();
+			if(searchBox.find(".expr-btn").hasClass("fa-superscript"))
+				searchBox.find(".expr-btn").removeClass("fa-superscript").addClass("fa-font");
+			searchBox.toggle();
+			var c = cursor.save();
+			focus();
+			cursor.load(c);
+			var hiddenSeps = element.find("table.cdb-sheet > tbody > tr").not(".head").filter(".separator").filter(".sep-hidden").find("a.toggle");
+			hiddenSeps.click();
+			cursor.scrollIntoView();
+		});
+
+		searchBox.find(".search-type").click(function(_) {
+			searchExp = !searchExp;
+			searchBox.find(".search-type").toggleClass("fa-superscript", searchExp);
+			searchBox.find(".search-type").toggleClass("fa-font", !searchExp);
+			updateFilters();
+		});
+
+		searchBox.find(".search-hidden").click(function(_) {
+			searchHidden = !searchHidden;
+			searchBox.find(".search-hidden").toggleClass("fa-eye", searchHidden);
+			searchBox.find(".search-hidden").toggleClass("fa-eye-slash", !searchHidden);
+			if (!searchHidden) {
+				var hiddenSeps = element.find("table.cdb-sheet > tbody > tr").not(".head").filter(".separator").filter(".sep-hidden").find("a.toggle");
+				hiddenSeps.click();
+				hiddenSeps.click();
+			}
+			updateFilters();
+		});
+
+		// If there is still a search apply it
+		if (filters.length > 0) {
+			searchBox.show();
+
+			for (f in filters)
+				inputs.val(f);
+
+			if (searchExp)
+				searchBox.find(".search-type").click();
+
+			if (!searchHidden)
+				searchBox.find(".search-type").click();
+
+			searchFilter(filters);
 		}
 	}
 
@@ -1826,9 +1758,9 @@ class Editor extends Component {
 			if( col != null ) {
 				base.mapType(function(t) {
 					return switch( t ) {
-					case TRef(o) if( o.indexOf(col.name) >= 0 ):
+					case TRef(o) if( o.indexOf('${sheet.name}@${col.name}') >= 0 ):
 						TRef(StringTools.replace(o, col.name, c.name));
-					case TLayer(o) if( o.indexOf(col.name) >= 0 ):
+					case TLayer(o) if( o.indexOf('${sheet.name}@${col.name}') >= 0 ):
 						TLayer(StringTools.replace(o, col.name, c.name));
 					default:
 						t;
@@ -1843,10 +1775,15 @@ class Editor extends Component {
 				if (path.length > 0 || back.length > 0) {
 					function handleMoveTable() {
 						var cdbPath = sheet.getPath().split("@");
-						for(b in back) {
+						for(i in 0...back.length) {
+							var b = back[back.length - i - 1];
+
+							// if it's not actually a backards move
 							if (b != "..") {
-								return 'Invalid backwards move path "${back.join("/")}" (correct syntax : ../../columnName)';
+								path.unshift(b);
+								continue;
 							}
+
 							if (cdbPath.length <= 0) {
 								return 'Backwards path "${back.join("/")}" goes outside of base sheet';
 							}
@@ -1912,43 +1849,6 @@ class Editor extends Component {
 		newColumn(sheet,col);
 	}
 
-	public function insertLine( table : Table, index = 0 ) {
-		if( table == null || !table.canInsert() )
-			return;
-		if( table.displayMode == Properties ) {
-			var ins = table.element.find("select.insertField");
-			var options = [for( o in ins.find("option").elements() ) Element.getVal(o)];
-			ins.attr("size", options.length);
-			options.shift();
-			ins.focus();
-			var index = 0;
-			ins.val(options[0]);
-			ins.off();
-			ins.blur(function(_) table.refresh());
-			ins.keydown(function(e) {
-				switch( e.keyCode ) {
-				case K.ESCAPE:
-					element.focus();
-				case K.UP if( index > 0 ):
-					ins.val(options[--index]);
-				case K.DOWN if( index < options.length - 1 ):
-					ins.val(options[++index]);
-				case K.ENTER:
-					@:privateAccess table.insertProperty(Element.getVal(ins));
-				default:
-				}
-				e.stopPropagation();
-				e.preventDefault();
-			});
-			return;
-		}
-		beginChanges();
-		table.sheet.newLine(index);
-		table.refreshCellValue();
-		endChanges();
-		table.refresh();
-	}
-
 	public function ensureUniqueId(originalId : String, table : Table, column : cdb.Data.Column) {
 		var scope = table.getScope();
 		var idWithScope : String = if(column.scope != null)  table.makeId(scope, column.scope, originalId) else originalId;
@@ -2009,34 +1909,6 @@ class Editor extends Component {
         return newId;
 	}
 
-	public function duplicateLine( table : Table, index = 0 ) {
-		if( !table.canInsert() || table.displayMode != Table )
-			return;
-		var srcObj = table.sheet.lines[index];
-		beginChanges();
-		var obj = table.sheet.newLine(index);
-		table.refreshCellValue();
-		for(colId => c in table.columns ) {
-			var val = Reflect.field(srcObj, c.name);
-			if( val != null ) {
-				if( c.type != TId ) {
-					// Deep copy
-					Reflect.setField(obj, c.name, haxe.Json.parse(haxe.Json.stringify(val)));
-				} else {
-					// Increment the number at the end of the id if there is one
-
-					var newId = getNewUniqueId(val, table, c);
-					if (newId != null) {
-						Reflect.setField(obj, c.name, newId);
-					}
-				}
-			}
-		}
-		endChanges();
-		table.refresh();
-		table.getRealSheet().sync();
-	}
-
 	public function popupColumn( table : Table, col : cdb.Data.Column, ?cell : Cell ) {
 		if( view != null )
 			return;
@@ -2057,9 +1929,9 @@ class Editor extends Component {
 				sheet.columns.remove(col);
 				sheet.columns.insert(nextIndex, col);
 				if (cursor.x == indexColumn)
-					cursor.set(cursor.table, nextIndex, cursor.y);
+					cursor.setDefault(cursor.table, nextIndex, cursor.y);
 				else if (cursor.x == nextIndex)
-					cursor.set(cursor.table, nextIndex + 1, cursor.y);
+					cursor.setDefault(cursor.table, nextIndex + 1, cursor.y);
 				endChanges();
 				refresh();
 			}},
@@ -2070,9 +1942,9 @@ class Editor extends Component {
 				sheet.columns.remove(col);
 				sheet.columns.insert(nextIndex, col);
 				if (cursor.x == indexColumn)
-					cursor.set(cursor.table, nextIndex, cursor.y);
+					cursor.setDefault(cursor.table, nextIndex, cursor.y);
 				else if (cursor.x == nextIndex)
-					cursor.set(cursor.table, nextIndex - 1, cursor.y);
+					cursor.setDefault(cursor.table, nextIndex - 1, cursor.y);
 				endChanges();
 				refresh();
 			}},
@@ -2174,72 +2046,15 @@ class Editor extends Component {
 		// TODO : create single edit-all script view allowing global search & replace
 	}
 
-	public function moveLine( line : Line, delta : Int, exact = false ) {
-		if( !line.table.canInsert() )
-			return;
-		beginChanges();
-		var prevIndex = line.index;
-
-		var index : Null<Int> = null;
-		var currIndex : Null<Int> = line.index;
-		if (!exact) {
-			var distance = (delta >= 0 ? delta : -1 * delta);
-			for( _ in 0...distance ) {
-				currIndex = line.table.sheet.moveLine( currIndex, delta );
-				if( currIndex == null )
-					break;
-				else
-					index = currIndex;
-			}
-		}
-		else
-			while (index != prevIndex + delta) {
-				currIndex = line.table.sheet.moveLine( currIndex, delta );
-				if( currIndex == null )
-					break;
-				else
-					index = currIndex;
-			}
-
-		if( index != null ) {
-			if (index != prevIndex) {
-				if ( cursor.y == prevIndex ) cursor.set(cursor.table, cursor.x, index);
-				else if ( cursor.y > prevIndex && cursor.y <= index) cursor.set(cursor.table, cursor.x, cursor.y - 1);
-				else if ( cursor.y < prevIndex && cursor.y >= index) cursor.set(cursor.table, cursor.x, cursor.y + 1);
-			}
-			refresh();
-		}
-		endChanges();
-	}
-
-	function moveLines(lines : Array<Line>, delta : Int) {
-		if( lines.length == 0 || !lines[0].table.canInsert() || delta == 0 )
-			return;
-		var selDiff: Null<Int> = cursor.select == null ? null : cursor.select.y - cursor.y;
-		beginChanges();
-		lines.sort((a, b) -> { return (a.index - b.index) * delta * -1; });
-		for( l in lines ) {
-			moveLine(l, delta);
-		}
-		if (selDiff != null && hxd.Math.iabs(selDiff) == lines.length - 1)
-			cursor.set(cursor.table, cursor.x, cursor.y, {x: cursor.x, y: cursor.y + selDiff});
-		endChanges();
-	}
 
 	public function popupLine( line : Line ) {
-		if( !line.table.canInsert() )
-			return;
+		if( !line.table.canInsert() ) return;
+
 		var sheet = line.table.sheet;
-		var selection = cursor.getSelectedLines();
-		var isSelectedLine = false;
-		for( l in selection ) {
-			if( l == line ) {
-				isSelectedLine = true;
-				break;
-			}
-		}
-		var firstLine = isSelectedLine ? selection[0] : line;
-		var lastLine = isSelectedLine ? selection[selection.length - 1] : line;
+		var selectedLines = cursor.getSelectedLines();
+		var isSelectedLine = selectedLines.contains(line);
+		var firstLine = isSelectedLine ? selectedLines[0] : line;
+		var lastLine = isSelectedLine ? selectedLines[selectedLines.length - 1] : line;
 
 		var sepIndex = -1;
 		for( i in 0...sheet.separators.length )
@@ -2278,10 +2093,11 @@ class Editor extends Component {
 				usedLine = lastLine;
 			}
 			var delta = lastOfGroup - usedLine.index + separatorCount(usedLine.index);
+			var linesToMove = isSelectedLine ? selectedLines : [usedLine];
 			moveSubmenu.push({
 				label : sep.title,
 				enabled : true,
-				click : isSelectedLine ? moveLines.bind(selection, delta) : () -> moveLine(usedLine, delta),
+				click : () -> usedLine.table.moveLines(linesToMove, delta)
 			});
 		}
 
@@ -2305,28 +2121,31 @@ class Editor extends Component {
 			{
 				label : "Move Up",
 				enabled:  (firstLine.index > 0 || sepIndex >= 0),
-				click : isSelectedLine ? moveLines.bind(selection, -1) : () -> moveLine(line, -1),
+				click : () -> line.table.moveLines(isSelectedLine ? [line] : selectedLines, -1),
 			},
 			{
 				label : "Move Down",
 				enabled:  (lastLine.index < sheet.lines.length - 1),
-				click : isSelectedLine ? moveLines.bind(selection, 1) : () -> moveLine(line, 1),
+				click : () -> line.table.moveLines(isSelectedLine ? [line] : selectedLines, 1),
 			},
 			{ label : "Move to Group", enabled : moveSubmenu.length > 0, menu : moveSubmenu },
 			{ label : "", isSeparator : true },
 			{ label : "Insert", click : function() {
-				insertLine(line.table,line.index);
+				line.table.insertLine(line.index);
 				cursor.set(line.table, -1, line.index + 1);
 				focus();
 			}, keys : config.get("key.cdb.insertLine") },
 			{ label : "Duplicate", click : function() {
-				duplicateLine(line.table,line.index);
+				line.table.duplicateLine(line.index);
 				cursor.set(line.table, -1, line.index + 1);
 				focus();
 			}, keys : config.get("key.duplicate") },
 			{ label : "Delete", click : function() {
-				var sel = cursor.getSelection();
-				delete(sel.x1, sel.x2, sel.y1, sel.y2);
+				beginChanges();
+				cursor.selection.sort((el1, el2) -> { return el1.y1 == el2.y1 ? 0 : el1.y1 < el2.y1 ? 1 : -1; });
+				for (s in cursor.selection)
+					delete(s.x1, s.x2, s.y1, s.y2);
+				endChanges();
 			} },
 			{ label : "Separator", enabled : !sheet.props.hide, checked : sepIndex >= 0, click : function() {
 				beginChanges();

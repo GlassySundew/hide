@@ -18,6 +18,8 @@ typedef HideGlobalConfig = {
 
 	// General
 	var autoSavePrefab : Bool;
+	var svnShowVersionedFiles : Bool;
+	var svnShowModifiedFiles : Bool;
 
 	// Search
 	var closeSearchOnFileOpen : Bool;
@@ -26,6 +28,11 @@ typedef HideGlobalConfig = {
 	// Performance
 	var trackGpuAlloc : Bool;
 	var cullingDistanceFactor : Float;
+
+	// CDB
+	var highlightActiveLine : Bool;
+	var highlightActiveLineHeader : Bool;
+	var highlightActiveColumnHeader : Bool;
 };
 
 typedef HideProjectConfig = {

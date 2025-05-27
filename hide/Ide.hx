@@ -34,6 +34,7 @@ class Ide extends hide.tools.IdeData {
 	var fullscreen : Bool;
 	var updates : Array<Void->Void> = [];
 	var views : Array<hide.ui.View<Dynamic>> = [];
+	var lastClosedTabStates : Array<Dynamic> = [];
 
 	var renderers : Array<h3d.mat.MaterialSetup>;
 	var subView : { component : String, state : Dynamic, events : {} };
@@ -140,6 +141,7 @@ class Ide extends hide.tools.IdeData {
 		}
 
 		setProject(current);
+		loadProject();
 		window.window.document.addEventListener("mousedown", function(e) {
 			mouseX = e.x;
 			mouseY = e.y;
@@ -203,7 +205,7 @@ class Ide extends hide.tools.IdeData {
 			syncMousePosition(e);
 			var view = getViewAt(mouseX, mouseY);
 			var items : Array<String> = [for(f in e.dataTransfer.files) Reflect.field(f, "path")];
-			if(view != null && view.onDragDrop(items, drop)) {
+			if(view != null && view.onDragDrop(items, drop, e)) {
 				e.preventDefault();
 				e.stopPropagation();
 				return true;
@@ -226,7 +228,7 @@ class Ide extends hide.tools.IdeData {
 		if( subView != null ) body.className +=" hide-subview";
 
 		// Listen to FileTree dnd
-		function treeDragFun(data,drop) {
+		function treeDragFun(data,drop, event) {
 			var nodeIds : Array<String> = cast data.data.nodes;
 			if(data.data.jstree == null) return false;
 			for( ft in getViews(hide.view.FileTree) ) {
@@ -244,20 +246,20 @@ class Ide extends hide.tools.IdeData {
 					continue;
 				var view = getViewAt(mouseX, mouseY);
 				if(view != null)
-					return view.onDragDrop(paths, drop);
+					return view.onDragDrop(paths, drop, event);
 			}
 			return false;
 		}
 		new Element(window.window.document).on("dnd_move.vakata.jstree", function(e, data:Dynamic) {
 			var el = (data.helper:hide.Element);
-			var drag = treeDragFun(data,false);
+			var drag = treeDragFun(data,false,data.event.originalEvent);
 			var icon = el.find(new Element(".jstree-icon"));
 			el.css(drag ? { filter : "brightness(120%)", opacity : 1 } : { filter : "", opacity : 0.5 });
 			icon.toggleClass("jstree-er", !drag);
 			icon.toggleClass("jstree-ok", drag);
 		});
-		new Element(window.window.document).on("dnd_stop.vakata.jstree", function(e, data) {
-			treeDragFun(data,true);
+		new Element(window.window.document).on("dnd_stop.vakata.jstree", function(e, data:Dynamic) {
+			treeDragFun(data,true, data.event.originalEvent);
 		});
 
 		// dispatch global keys based on mouse position
@@ -309,6 +311,12 @@ class Ide extends hide.tools.IdeData {
 	function get_isFocused() {
 		return js.Browser.document.hasFocus();
 	}
+	public function focus() {
+		window.focus();
+	}
+	public function blur() {
+		window.blur();
+	}
 
 	function onWindowChange() {
 		if( hasReloaded )
@@ -323,6 +331,9 @@ class Ide extends hide.tools.IdeData {
 		}
 		if( subView == null )
 			config.global.save();
+
+		for (v in views)
+			v.onResize();
 	}
 
 	function initLayout( ?state : { name : String, state : Config.LayoutState } ) {
@@ -528,12 +539,16 @@ class Ide extends hide.tools.IdeData {
 		};
 	}
 
-	public function setClipboard( text : String ) {
-		nw.Clipboard.get().set(text, Text);
+	public function setClipboard( data : String, type: nw.Clipboard.ClipboardType = Text ) {
+		nw.Clipboard.get().set([{data: data, type: type }]);
 	}
 
-	public function getClipboard() {
-		return nw.Clipboard.get().get(Text);
+	public function setClipboardMultiple( datas: Array<nw.Clipboard.ClipboardData> ) {
+		nw.Clipboard.get().set(datas);
+	}
+
+	public function getClipboard(type: nw.Clipboard.ClipboardType = Text) {
+		return nw.Clipboard.get().get(type);
 	}
 
 	public function registerUpdate( updateFun ) {
@@ -596,47 +611,41 @@ class Ide extends hide.tools.IdeData {
 	var showErrors = true;
 	var errorWindow :Element = null;
 	override function error( e : Dynamic ) {
-		if( showErrors && !js.Browser.window.confirm(e) )
-			showErrors = false;
+		if( showErrors ) {
+			onIdeError(e);
+			if( !js.Browser.window.confirm(e) )
+				showErrors = false;
+		}
 
 		if (!showErrors) {
 			if (errorWindow == null) {
-				errorWindow = new Element('
-					<span class="error-suppressed">
-						<button class="reload"><i class="icon ico ico-refresh"></i>Reload</button>
-						Errors are currently suppressed in the editor. Please save your work and reload.
-					</span>
+				statusBar.toggleClass("error");
+
+				errorWindow = new Element('<div class="error-suppressed">
+					<button class="reload"><i class="icon ico ico-refresh"></i>Reload</button>
+					<span>Errors are currently suppressed in the editor. Please save your work and reload.</span>
+					</div>
 				');
 
-				addStatusIcon(errorWindow);
-
-				var errorLog = errorWindow.find(".error-log");
+				errorWindow.insertAfter(statusIcons);
 
 				var btnSaveReload = errorWindow.find(".reload");
 				btnSaveReload.click(function(_) {
 					this.reload();
 				});
-
-				var btnShowErrors = errorWindow.find(".show-errors");
-				btnShowErrors.click(function(_) {
-					if (errorLog.hasClass("hidden"))
-						errorLog.removeClass("hidden");
-					else
-						errorLog.addClass("hidden");
-				});
 			}
-
-			errorWindow.find(".error-log").append(new Element('<p>${e}</p>'));
 		}
 
 		js.Browser.console.error(e);
 	}
 
 	public function quickError( msg : Dynamic, timeoutSeconds : Float = 5.0 ) {
+		var str = StringTools.htmlEscape(Std.string(msg));
+		str = StringTools.replace(str, "\n", "<br/>");
 		var e = new Element('
 		<div class="message error">
 			<div class="icon ico ico-warning"></div>
-			<div class="text">${StringTools.htmlEscape(Std.string(msg))}</div>
+			<div class="text">${str}</div>
 		</div>');
 
 		js.Browser.console.error(msg);
@@ -644,9 +653,8 @@ class Ide extends hide.tools.IdeData {
 		globalMessage(e, timeoutSeconds);
 	}
 
-	override function setProject( dir : String ) {
-		super.setProject(dir);
-
+	function loadProject() {
+		var dir = ideConfig.currentProject;
 		setProgress();
 		shaderLoader = new hide.tools.ShaderLoader();
 		hxsl.Cache.clear();
@@ -769,6 +777,7 @@ class Ide extends hide.tools.IdeData {
 				e.type = "text/javascript";
 				e.src = "file://"+file.split("\\").join("/");
 				js.Browser.document.body.appendChild(e);
+				fileWatcher.register(file,reload);
 			case "css":
 				var e = js.Browser.document.createLinkElement();
 				e.addEventListener("load", onLoad);
@@ -777,9 +786,9 @@ class Ide extends hide.tools.IdeData {
 				e.type = "text/css";
 				e.href = "file://" + file.split("\\").join("/");
 				js.Browser.document.body.appendChild(e);
+				fileWatcher.register(file, () -> reloadCss());
 			default: error('Unknown plugin type $type for file $file');
 		}
-		fileWatcher.register(file,reload);
 	}
 
 	inline function loadScript( file : String, callb : Void -> Void ) {
@@ -789,7 +798,18 @@ class Ide extends hide.tools.IdeData {
 	public function reload() {
 		hasReloaded = true;
 		fileWatcher.dispose();
+		hide.view.RemoteConsoleView.onBeforeReload();
 		js.Browser.location.reload();
+	}
+
+	public function reloadCss(path: String = null) {
+		var css = new js.jquery.JQuery('link[type="text/css"]');
+		css.each(function(i, e) : Void {
+			var link : js.html.LinkElement = cast e;
+			if (path == null || StringTools.contains(link.href, path)) {
+				link.href = link.href + "?" + haxe.Timer.stamp();
+			}
+		});
 	}
 
 	public function getCDBContent<T>( sheetName : String ) : Array<T> {
@@ -1192,7 +1212,8 @@ class Ide extends hide.tools.IdeData {
 				continue;
 			}
 			new Element("<menu>").attr("label",v).appendTo(menu.find(".project .recents")).click(function(_){
-				setProject(v);
+				var dir = v;
+				setProject(dir);
 				reload(); // Reload stylesheets
 			});
 		}
@@ -1202,6 +1223,7 @@ class Ide extends hide.tools.IdeData {
 				if( StringTools.endsWith(dir,"/res") || StringTools.endsWith(dir,"\\res") )
 					dir = dir.substr(0,-4);
 				setProject(dir);
+				reload();
 			}, true);
 		});
 		menu.find(".project .clear").click(function(_) {
@@ -1219,40 +1241,13 @@ class Ide extends hide.tools.IdeData {
 			untyped chrome.runtime.reload();
 		});
 		menu.find(".build-files").click(function(_) {
-			var lastTime = haxe.Timer.stamp();
-			var all = [""];
-			var done = 0;
-			function loop() {
-				while( true ) {
-					if( all.length == 0 ) {
-						setProgress();
-						return;
-					}
-					if( haxe.Timer.stamp() - lastTime > 0.1 ) {
-						lastTime = haxe.Timer.stamp();
-						setProgress('(${Std.int(done*1000/(done+all.length))/10}%) '+all[0]);
-						haxe.Timer.delay(loop,0);
-						return;
-					}
-					var path = all.shift();
-					var e = try hxd.res.Loader.currentInstance.load(path).entry catch( e : hxd.res.NotFound ) null;
-					if( e == null && path == "" ) e = hxd.res.Loader.currentInstance.fs.getRoot();
-					if( e != null ) done++;
-					if( e != null && e.isDirectory ) {
-						var base = path;
-						if( base != "" ) base += "/";
-						for( f in sys.FileSystem.readDirectory(getPath(path)) ) {
-							var path = base + f;
-							if( path == ".tmp" ) continue;
-							if( sys.FileSystem.isDirectory(getPath(path)) )
-								all.unshift(path);
-							else
-								all.push(path);
-						}
-					}
-				}
-			}
-			loop();
+			hrt.impl.BuildTools.buildAllFiles(resourceDir + "/", function(percent, currentFile) {
+				setProgress('($percent%) $currentFile');
+			}, function(msg) {
+				error(msg);
+			}, function(count, errCount) {
+				setProgress();
+			});
 		});
 
 		for( r in renderers ) {
@@ -1261,7 +1256,7 @@ class Ide extends hide.tools.IdeData {
 				if( r != h3d.mat.MaterialSetup.current ) {
 					projectConfig.renderer = name;
 					config.user.save();
-					setProject(ideConfig.currentProject);
+					reload();
 				}
 			});
 		}
@@ -1382,7 +1377,7 @@ class Ide extends hide.tools.IdeData {
 						projectConfig.dbCategories.remove(cat);
 					else
 						projectConfig.dbCategories.push(cat);
-					config.global.save();
+					config.user.save();
 					applyCategories();
 				});
 			}
@@ -1390,12 +1385,12 @@ class Ide extends hide.tools.IdeData {
 
 			db.find(".dbCatShowAll").click(function(_) {
 				projectConfig.dbCategories = null;
-				config.global.save();
+				config.user.save();
 				applyCategories();
 			});
 			db.find(".dbCatHideAll").click(function(_) {
 				projectConfig.dbCategories = [];
-				config.global.save();
+				config.user.save();
 				applyCategories();
 			});
 		}
@@ -1439,6 +1434,9 @@ class Ide extends hide.tools.IdeData {
 		});
 		analysis.find(".remoteconsole").click(function(_) {
 			open("hide.view.RemoteConsoleView",{});
+		});
+		analysis.find(".devtools").click(function(_) {
+			open("hide.view.DevTools",{});
 		});
 		analysis.find(".gpudump").click(function(_) {
 			var path = hide.tools.MemDump.gpudump();
@@ -1592,6 +1590,13 @@ class Ide extends hide.tools.IdeData {
 			target.addChild(config, index);
 	}
 
+	public function reopenLastClosedTab() {
+		var state = lastClosedTabStates.pop();
+		if( state != null && state.componentName != null ) {
+			open(state.componentName, state);
+		}
+	}
+
 	public function globalMessage(element: Element, timeoutSeconds : Float = 5.0) {
 		var body = new Element('body');
 		var messages = body.find("#message-container");
@@ -1619,10 +1624,12 @@ class Ide extends hide.tools.IdeData {
 	}
 
 	public function quickMessage( text : String, timeoutSeconds : Float = 5.0 ) {
+		var str = StringTools.htmlEscape(text);
+		str = StringTools.replace(str, "\n", "<br/>");
 		var e = new Element('
 		<div class="message">
 			<div class="icon ico ico-info-circle"></div>
-			<div class="text">${text}</div>
+			<div class="text">${str}</div>
 		</div>');
 
 		js.Browser.console.log(text);
@@ -1641,6 +1648,31 @@ class Ide extends hide.tools.IdeData {
 	public function ask( text : String, ?defaultValue = "" ) {
 		return js.Browser.window.prompt(text, defaultValue);
 	}
+
+	public function getSVNModifiedFiles() {
+		var modifiedFiles : Array<String> = [];
+		if (!isSVNAvailable())
+			throw "SVN not available";
+		var cmd = js.node.ChildProcess.execSync('svn status', { cwd: projectDir });
+		var outputs : Array<String> = '$cmd'.split("\r\n");
+		for (o in outputs) {
+			if (o.length == 0)
+				continue;
+
+			o = StringTools.replace(o, '\\', "/");
+			var file = getPath(o.substr(o.indexOf("res/") + 4));
+			modifiedFiles.push(file);
+		}
+		return modifiedFiles;
+	}
+
+	public function isSVNAvailable() {
+		return js.node.ChildProcess.spawnSync("svn",["--version"]).status == 0 &&
+		js.node.ChildProcess.spawnSync("where.exe", ["TortoiseProc.exe"]).status == 0 &&
+		js.node.ChildProcess.spawnSync("svn", ["info", getPath(projectDir)]).status == 0;
+	}
+
+	public static dynamic function onIdeError(e: Dynamic) {}
 
 	public static var inst : Ide;
 

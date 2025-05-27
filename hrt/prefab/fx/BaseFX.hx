@@ -194,7 +194,9 @@ class BaseFXTools {
 			paramCount++;
 
 			var prop = Reflect.field(basePrefab.props, v.name);
-			if(prop == null)
+			if (prop == null)
+				prop = Reflect.field(basePrefab, v.name);
+			if (prop == null)
 				prop = hrt.prefab.DynamicShader.getDefault(v.type);
 
 			var curves = Curve.getCurves(basePrefab, v.name);
@@ -294,12 +296,13 @@ class BaseFXTools {
 			}
 
 			if(batch != null) {
-				batch.material.mainPass.addShader(shader);
+				var shaderPrefab = Std.downcast(elt, hrt.prefab.Shader);
+				@:privateAccess shaderPrefab.applyShader(batch, batch.material, shader);
 			}
 		}
 
 		var rendererFX = elt.to(hrt.prefab.rfx.RendererFX);
-		if (rendererFX != null) {
+		if (rendererFX != null && rendererFX.enabled) {
 			var screenShaderGraph = elt.to(hrt.prefab.rfx.ScreenShaderGraph);
 			if (screenShaderGraph != null) {
 				var params = makeShaderParams(screenShaderGraph, screenShaderGraph.getShaderDefinition());

@@ -3,7 +3,18 @@ package hrt.prefab.rfx;
 class SSRShader extends h3d.shader.ScreenShader {
 	static var SRC = {
 
-		@global var depthMap : Channel;
+		@param var depthBuffer : Sampler2D;
+		@global var camera : {
+			var position : Vec3;
+			var zNear : Float;
+			var zFar : Float;
+		}
+
+		@const var USE_MASK : Bool;
+		@const var USE_ROUGHNESS : Bool;
+		@const var CHECK_ANGLE : Bool;
+
+		@param var ssrNormalMask : Sampler2D;
 
 		@param var texSize : Vec2;
 		@param var hdrMap : Sampler2D;
@@ -26,10 +37,11 @@ class SSRShader extends h3d.shader.ScreenShader {
 		@param var frustum : Buffer<Vec4, 6>;
 
 		@const var batchSample : Bool;
-		@const var CHECK_ANGLE : Bool;
 
 		@param var vignettingRadius : Float;
 		@param var vignettingSoftness : Float;
+
+		@param var depthBufferPrecision : Float;
 
 		var screenDepth : Float;
 
@@ -38,11 +50,11 @@ class SSRShader extends h3d.shader.ScreenShader {
 		}
 
 		function getViewPos(uv:Vec2):Vec4 {
-			screenDepth = depthMap.getLod(uv, 0).r;
+			screenDepth = depthBuffer.getLod(uv, 0).r;
 			var ruv = vec4(uvToScreen(uv), screenDepth, 1);
 			var vpos = ruv * cameraInverseProj;
 			return vpos / vpos.w;
-		};
+		}
 
 		function intersectViewRayWithFrustum( start : Vec3, dir : Vec3 ) : Vec3 {
 			var wStart = vec4(start, 1.0) * cameraInverseView;
@@ -64,13 +76,29 @@ class SSRShader extends h3d.shader.ScreenShader {
 			return vEnd.xyz / vEnd.w;
 		}
 
-		function fragment() {
-			var normal = normalMap.get(calculatedUV).rgb;
-			if (normal.dot(normal) <= 0)
-				discard;
+		// scale thickness by an approximation of minimum difference between to depth step.
+		// https://www.sjbaker.org/steve/omniv/love_your_z_buffer.html
+		function scaledThickness(z : Float) : Float {
+			var t = thickness * camera.zNear * depthBufferPrecision;
+			return t * z * z / (depthBufferPrecision * camera.zNear - z);
+		}
 
-			var roughnessFactor = 1 - smoothstep(0.0, maxRoughness, roughnessMap.get(calculatedUV).g);
-			if (roughnessFactor <= 0)
+		function fragment() {
+
+			var intensityFactor = 0.0;
+			var normal = vec3(0.0);
+			if ( USE_ROUGHNESS ) {
+				intensityFactor = 1 - smoothstep(0.0, maxRoughness, roughnessMap.get(calculatedUV).g);
+				normal = normalMap.get(calculatedUV).rgb;
+			}
+			if ( USE_MASK ) {
+				var normalMask = ssrNormalMask.get(calculatedUV);
+				normal = mix(normal, normalMask.rgb, normalMask.a);
+				intensityFactor = mix(intensityFactor, 1.0, normalMask.a);
+			}
+			if (intensityFactor <= 0)
+				discard;
+			if (normal.dot(normal) <= 0)
 				discard;
 
 			var positionFrom = getViewPos(calculatedUV);
@@ -101,13 +129,15 @@ class SSRShader extends h3d.shader.ScreenShader {
 			var frag = startFrag.xy + increment;
 			var uv = frag / texSize;
 
+			var angleCorrection = 1.0 / abs(dot(camDir, viewNormal));
 			if (!batchSample) {
 				var iStepCount = int( stepCount );
 				for ( curStep in 0...iStepCount ) {
 					var curPos = getViewPos(uv);
 					var viewDistance = (positionFrom.z * positionTo.z) / mix(positionTo.z, positionFrom.z, float( curStep + 1 ) / stepCount );
 					var depth = viewDistance - curPos.z;
-					if ( depth >= 0.0 && depth < thickness && screenDepth < 1 ) {
+					var t = scaledThickness(curPos.z) * angleCorrection;
+					if ( depth >= 0.0 && depth < t && screenDepth < 1 ) {
 						hit = 1;
 						break;
 					}
@@ -125,7 +155,8 @@ class SSRShader extends h3d.shader.ScreenShader {
 						var curPos = getViewPos(uv);
 						var viewDistance = (positionFrom.z * positionTo.z) / mix(positionTo.z, positionFrom.z, float( curStep * 4 + i + 1 ) / stepCount );
 						var depth = viewDistance - curPos.z;
-						results[i] = depth >= 0.0 && depth < thickness && screenDepth < 1;
+						var t = scaledThickness(curPos.z) * angleCorrection;
+						results[i] = depth >= 0.0 && depth < t && screenDepth < 1;
 						frag += increment;
 						uv = frag / texSize;
 					}
@@ -157,7 +188,7 @@ class SSRShader extends h3d.shader.ScreenShader {
 			var vignetting = 1.0 - smoothstep(vignettingRadius-vignettingSoftness, vignettingRadius, dist);
 
 			var fragmentColor = hdrMap.get(uv).rgb;
-			pixelColor = saturate(vec4(fragmentColor * colorMul, intensity * roughnessFactor * vignetting));
+			pixelColor = saturate(vec4(fragmentColor * colorMul, intensity * intensityFactor * vignetting));
 		}
 	}
 }
@@ -168,12 +199,16 @@ class SSR extends RendererFX {
 
 	var blurPass = new h3d.pass.Blur();
 	var ssr : h3d.mat.Texture;
+	var normalMaskOutput : h3d.pass.Output;
 
+	@:s public var debugSSRMask : Bool = false;
 	@:s public var intensity : Float = 1.;
 	@:s public var colorMul : Float = 1.;
-	@:s public var thickness : Float = 1.0;
+	@:s public var thicknessValue : Float = 0.0001;
 	@:s public var blurRadius : Float = 1.0;
 	@:s public var textureSize : Float = 0.5;
+	@:s public var useMask : Bool = false;
+	@:s public var useRoughness : Bool = true;
 	@:s public var maxRoughness : Float = 0.75;
 	@:s public var minAngle : Float = 5.0;
 	@:s public var rayMarchingResolution : Float = 0.5;
@@ -185,56 +220,102 @@ class SSR extends RendererFX {
 	function new(parent, shared) {
 		super(parent, shared);
 		ssrPass = new h3d.pass.ScreenFx(new SSRShader());
+		normalMaskOutput = new h3d.pass.Output("ssrNormalMask",[
+			Vec4([Value("output.normal",3),Swiz(Value("output.color"),[W])])
+		]);
+	}
+
+	function execute( r : h3d.scene.Renderer, step : h3d.impl.RendererFX.Step ) {
+		if ( !checkEnabled() || debugSSRMask || (!useRoughness && !useMask) )
+			return;
+
+		r.mark("SSR");
+
+		var ssrShader = ssrPass.shader;
+
+		var hdrMap = r.ctx.getGlobal("hdrMap");
+		ssrShader.hdrMap = hdrMap;
+		var pbrRenderer = cast(r, h3d.scene.pbr.Renderer);
+		@:privateAccess ssrShader.roughnessMap = pbrRenderer.textures.pbr;
+
+		var normalMap = r.ctx.getGlobal("normalMap").texture;
+		ssrShader.normalMap = normalMap;
+		var t = r.ctx.engine.getCurrentTarget();
+		ssrShader.texSize = new h3d.Vector((t == null ? r.ctx.engine.width : t.width), (t == null ? r.ctx.engine.height : t.height));
+		ssrShader.colorMul = colorMul;
+		ssrShader.intensity = intensity;
+		ssrShader.thickness = thicknessValue;
+		ssrShader.maxRoughness = maxRoughness;
+		ssrShader.USE_ROUGHNESS = useRoughness;
+		if ( minAngle == 0 )
+			ssrShader.CHECK_ANGLE = false;
+		ssrShader.minCosAngle = Math.cos(hxd.Math.degToRad(minAngle));
+		var resRescale = 1.0;
+		if ( !support4K )
+			resRescale = hxd.Math.max(1.0, hxd.Math.max(ssrShader.texSize.x / 2560, ssrShader.texSize.y / 1440));
+		ssrShader.rayMarchingResolution = hxd.Math.clamp(rayMarchingResolution / resRescale);
+		ssrShader.batchSample = batchSample;
+
+		ssrShader.cameraView = r.ctx.camera.mcam;
+		ssrShader.cameraInverseView = r.ctx.camera.getInverseView();
+		ssrShader.cameraProj = r.ctx.camera.mproj;
+		ssrShader.cameraInverseProj = r.ctx.camera.getInverseProj();
+		ssrShader.cameraPos = r.ctx.camera.pos;
+
+		ssrShader.vignettingRadius = vignettingRadius;
+		ssrShader.vignettingSoftness = vignettingSmoothness;
+
+		ssrShader.depthBuffer = @:privateAccess pbrRenderer.textures.albedo.depthBuffer;
+		var depthBufferBits = switch(ssrShader.depthBuffer.format) {
+		case Depth16: 16;
+		case Depth24, Depth24Stencil8: 24;
+		case Depth32: 32;
+		default: throw "not a depthBuffer";
+		}
+		ssrShader.depthBufferPrecision = 1 << depthBufferBits;
+
+		ssrShader.frustum = r.ctx.getCameraFrustumBuffer();
+
+		ssrShader.USE_MASK = useMask;
+
+		ssr = r.allocTarget("ssr", false, textureSize / resRescale, hdrMap.format);
+		ssr.clear(0, 0);
+		r.ctx.engine.pushTarget(ssr);
+		ssrPass.render();
+		r.ctx.engine.popTarget();
+
+		blurPass.radius = blurRadius;
+		blurPass.apply(r.ctx, ssr);
+
+		h3d.pass.Copy.run(ssr, r.ctx.engine.getCurrentTarget(), Alpha);
+	}
+
+	function drawMask(r : h3d.scene.Renderer, step : h3d.impl.RendererFX.Step ) {
+		if ( !useMask )
+			return;
+		var ssrNormalMask = r.allocTarget("ssrNormalMask", true, 1.0, RGBA16F);
+		ssrNormalMask.clear(0,0);
+		r.ctx.engine.pushTarget(ssrNormalMask);
+		var pbrRenderer = Std.downcast(r, h3d.scene.pbr.Renderer);
+		normalMaskOutput.setContext(r.ctx);
+		if ( pbrRenderer != null )
+			normalMaskOutput.draw(r.get("ssrNormalMask"));
+		r.ctx.engine.popTarget();
+
+		ssrPass.shader.ssrNormalMask = ssrNormalMask;
+
+		if ( debugSSRMask ) {
+			var hdr = r.ctx.engine.getCurrentTarget();
+			hdr.clear(0);
+			h3d.pass.Copy.run(ssrNormalMask, hdr, Alpha);
+			return;
+		}
 	}
 
 	override function begin( r : h3d.scene.Renderer, step : h3d.impl.RendererFX.Step ) {
 		if( step == Forward ) {
-			r.mark("SSR");
-
-			var ssrShader = ssrPass.shader;
-
-			var hdrMap = r.ctx.getGlobal("hdrMap");
-			ssrShader.hdrMap = hdrMap;
-			@:privateAccess ssrShader.roughnessMap = cast(r, h3d.scene.pbr.Renderer).textures.pbr;
-
-			var normalMap = r.ctx.getGlobal("normalMap").texture;
-			ssrShader.normalMap = normalMap;
-			var t = r.ctx.engine.getCurrentTarget();
-			ssrShader.texSize = new h3d.Vector((t == null ? r.ctx.engine.width : t.width), (t == null ? r.ctx.engine.height : t.height));
-			ssrShader.colorMul = colorMul;
-			ssrShader.intensity = intensity;
-			ssrShader.thickness = thickness;
-			ssrShader.maxRoughness = maxRoughness;
-			if ( minAngle == 0 )
-				ssrShader.CHECK_ANGLE = false;
-			ssrShader.minCosAngle = Math.cos(hxd.Math.degToRad(minAngle));
-			var resRescale = 1.0;
-			if ( !support4K )
-				resRescale = hxd.Math.max(1.0, hxd.Math.max(ssrShader.texSize.x / 2560, ssrShader.texSize.y / 1440));
-			ssrShader.rayMarchingResolution = hxd.Math.clamp(rayMarchingResolution / resRescale);
-			ssrShader.batchSample = batchSample;
-
-			ssrShader.cameraView = r.ctx.camera.mcam;
-			ssrShader.cameraInverseView = r.ctx.camera.getInverseView();
-			ssrShader.cameraProj = r.ctx.camera.mproj;
-			ssrShader.cameraInverseProj = r.ctx.camera.getInverseProj();
-			ssrShader.cameraPos = r.ctx.camera.pos;
-
-			ssrShader.vignettingRadius = vignettingRadius;
-			ssrShader.vignettingSoftness = vignettingSmoothness;
-
-			ssrShader.frustum = r.ctx.getCameraFrustumBuffer();
-
-			ssr = r.allocTarget("ssr", false, textureSize / resRescale, hdrMap.format);
-			ssr.clear(0, 0);
-			r.ctx.engine.pushTarget(ssr);
-			ssrPass.render();
-			r.ctx.engine.popTarget();
-
-			blurPass.radius = blurRadius;
-			blurPass.apply(r.ctx, ssr);
-
-			h3d.pass.Copy.run(ssr, r.ctx.engine.getCurrentTarget(), Alpha);
+			drawMask(r, step);
+			execute(r, step);
 		}
 	}
 
@@ -243,11 +324,13 @@ class SSR extends RendererFX {
 		ctx.properties.add(new hide.Element('
 		<div class="group" name="SSR">
 			<dl>
+				<dt>Use mask</dt><dd><input type="checkbox" field="useMask"/></dd>
+				<dt>Use roughness</dt><dd><input type="checkbox" field="useRoughness"/></dd>
 				<dt>Intensity</dt><dd><input type="range" min="0" max="1" field="intensity"/></dd>
 				<dt>Color Mul</dt><dd><input type="range" min="0" max="1" field="colorMul"/></dd>
 				<dt>Max Roughness</dt><dd><input type="range" min="0" max="1" field="maxRoughness"/></dd>
 				<dt>Min Angle</dt><dd><input type="range" min="0" max="90" field="minAngle"/></dd>
-				<dt>Thickness</dt><dd><input type="range" min="0" max="1" field="thickness"/></dd>
+				<dt>Thickness</dt><dd><input type="range" min="0" max="1" field="thicknessValue"/></dd>
 				<dt>Ray marching resolution</dt><dd><input type="range" min="0" max="1" field="rayMarchingResolution"/></dd>
 				<dt>Blur radius</dt><dd><input type="range" min="0" max="5" field="blurRadius"/></dd>
 				<dt>Texture size</dt><dd><input type="range" min="0" max="1" field="textureSize"/></dd>
@@ -255,6 +338,11 @@ class SSR extends RendererFX {
 				<dt>Fast sample</dt><dd><input type="checkbox" field="batchSample"/></dd>
 				<dt>Vignetting radius</dt><dd><input type="range" min="0" max="1" field="vignettingRadius"/></dd>
 				<dt>Vignetting smoothness</dt><dd><input type="range" min="0" max="1" field="vignettingSmoothness"/></dd>
+			</dl>
+		</div>
+		<div class="group" name="Debug">
+			<dl>
+				<dt>Debug SSR mask</dt><dd><input type="checkbox" field="debugSSRMask"/></dd>
 			</dl>
 		</div>
 		'),this);

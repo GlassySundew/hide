@@ -47,7 +47,7 @@ class MeshSpawnShader extends ComputeUtils {
 	}
 
 	var tmpMat : h3d.Matrix = new h3d.Matrix();
-	override function onUpdate(emitter : GPUEmitter.GPUEmitterObject, buffer : h3d.Buffer, index : Int) {
+	override function onUpdate(emitter : GPUEmitterObject, buffer : h3d.Buffer, index : Int) {
 		super.onUpdate(emitter, buffer, index);
 		var parentInvert = new h3d.Matrix();
 		parentInvert.load(emitter.parent.getAbsPos());
@@ -84,7 +84,7 @@ class MeshSpawnShader extends ComputeUtils {
 		var relativeTransform : Mat4;
 		function main() {
 			var idx = computeVar.globalInvocation.x;
-			var vertexId = idx % vertexCount;
+			var vertexId = int(random(float(idx).xx) * vertexCount);
 			var vertexData = vbuf[vertexId];
 			speed = vec3(1.0);
 			var relativePosition = vertexData.position;

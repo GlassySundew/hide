@@ -7,9 +7,6 @@ enum DisplayMode {
 	AllProperties;
 }
 
-private typedef SepTree = { sep : cdb.Data.Separator, index : Int, subs : Array<SepTree>, parent : SepTree };
-private typedef Separator = { index : Int, element : Element, toggle : Element, hidden : Null<Bool> };
-
 class Table extends Component {
 
 	public var editor : Editor;
@@ -198,7 +195,7 @@ class Table extends Component {
 					e.preventDefault();
 					return;
 				}
-				editor.cursor.clickLine(line, e.shiftKey);
+				editor.cursor.clickLine(line, e.shiftKey, e.ctrlKey);
 			});
 			#if js
 			var headEl = head.get(0);
@@ -228,9 +225,19 @@ class Table extends Component {
 				ide.unregisterUpdate(updateDrag);
 				previewDrop.hide();
 				if (e.dataTransfer.dropEffect == "none") return false;
-				var pickedLine = getPickedLine(e);
-				if (pickedLine != null) {
-					editor.moveLine(line, pickedLine.index - line.index, true);
+
+				var dropTarget = getPickedLine(e);
+				if (dropTarget == null)
+					return false;
+
+				var selection = editor.cursor.getSelectedAreaIncludingLine(line);
+				if (selection != null) {
+					moveLinesTo(editor.cursor.getLinesFromSelection(selection), dropTarget.index);
+					return true;
+				}
+
+				if (dropTarget != null) {
+					line.table.moveLinesTo([line], dropTarget.index);
 					return true;
 				}
 
@@ -287,29 +294,59 @@ class Table extends Component {
 
 		var tbody = J("<tbody>");
 
-		var groupClass : String = null;
-		var sepIndex = -1, sepNext = sheet.separators[++sepIndex], hidden = false;
+		var sepIndex = -1;
+		var sepNext = sheet.separators[++sepIndex];
 		separators = [];
-		for( i in 0...lines.length+1 ) {
+		for( i in 0...lines.length ) {
+			// Create the separator of this index if there is one
 			while( sepNext != null && sepNext.index == i ) {
-				var sep = makeSeparator(sepIndex, colCount);
+				var sep = new Separator(tbody, this, sepNext);
+
+				// Create children relation between separators
+				var prevSep = separators[separators.length - 1];
+				if (prevSep != null) {
+					var prevLevel = prevSep.data.level == null ? 0 : prevSep.data.level;
+					var curLevel = sep.data.level == null ? 0 : sep.data.level;
+					if (prevLevel < curLevel) {
+						prevSep.subs.push(sep);
+						sep.parent = prevSep;
+					}
+					else if (prevLevel == curLevel) {
+						prevSep?.parent?.subs?.push(sep);
+						sep.parent = prevSep?.parent;
+					}
+					else {
+						var parent = prevSep;
+						var level = prevLevel;
+						while (parent != null && level >= curLevel) {
+							parent = parent.parent;
+							level = parent?.data?.level;
+							if (level == null)
+								level = 0;
+						}
+
+						parent?.subs?.push(sep);
+						sep.parent = parent;
+					}
+				}
+
 				separators.push(sep);
 				sep.element.appendTo(tbody);
-				if( sep.hidden != null ) hidden = sep.hidden;
-				if( sepNext.title != null )
-					groupClass = "group-"+StringTools.replace(sepNext.title.toLowerCase(), " ", "-");
 				sepNext = sheet.separators[++sepIndex];
 			}
-			if( i == lines.length ) break;
+
+			// Create lines
+			var parentSep = separators.length > 0 ? separators[separators.length - 1] : null;
 			var line = lines[i];
-			if( hidden )
+			line.create();
+			if (parentSep != null && !parentSep.getLinesVisiblity())
 				line.hide();
-			else
-				line.create();
-			if( groupClass != null )
-				line.element.addClass(groupClass);
 			tbody.append(line.element);
 		}
+
+		for (s in separators)
+			s.refresh(false);
+
 		element.append(tbody);
 
 		if( colCount == 0 ) {
@@ -318,9 +355,14 @@ class Table extends Component {
 			});
 			element.append(l);
 		} else if( sheet.lines.length == 0 && canInsert() ) {
-			var l = J('<tr><td colspan="${columns.length + 1}"><input type="button" value="Insert Line"/></td></tr>');
+			var l = J('<tr><td colspan="${columns.length + 1}"><input class="default-cursor" type="button" value="Insert Line"/></td></tr>');
 			l.find("input").click(function(_) {
-				editor.insertLine(this);
+				insertLine();
+				editor.cursor.set(this);
+			});
+			l.find("input").keydown(function(e) {
+				if (e.keyCode != 13) return;
+				insertLine();
 				editor.cursor.set(this);
 			});
 			element.append(l);
@@ -354,378 +396,13 @@ class Table extends Component {
 		return pickedLine;
 	}
 
-	function makeSeparatorTree( ?root ) {
-		var parent : SepTree = { sep : null, index : -1, subs : [], parent : null };
-		var prev = parent;
-		var prevLevel = -1;
-
-		var stack = [];
-		var select = parent;
-
-		for( index => s in sheet.separators ) {
-			var lv = s.level;
-			if( lv == null ) lv = 0;
-
-			if( prevLevel > lv ) {
-				for (idx in 0...(prevLevel - lv))
-					stack.pop();
-
-				parent = stack[stack.length - 1];
-			}
-
-			if( prevLevel < lv ) {
-				stack.push(prev);
-				parent = prev;
-			}
-
-			var sep = { sep : s, index : index, subs : [], parent : parent };
-			parent.subs.push(sep);
-			prevLevel = lv;
-			prev = sep;
-
-			if( s == root ) select = sep;
-		}
-
-		return select;
-	}
-
-	function getSeparatorKey(index : Int) : String {
-		var key = sheet.separators[index].title;
-
-		function findPrevious(s : cdb.Data.Separator) : cdb.Data.Separator{
-			var idx = sheet.separators.indexOf(s) - 1;
-			var sepInfo = sheet.separators[idx + 1];
-			while(idx >= 0) {
-				var l1 = sheet.separators[idx].level;
-				var l2 = sepInfo.level;
-				if (l1 == null) l1 = 0;
-				if (l2 == null) l2 = 0;
-				if (l2 > l1)
-					break;
-				idx--;
-			}
-
-			if (idx != 0)
-				return sheet.separators[idx];
-
-			return null;
-		}
-
-		var prev = findPrevious(sheet.separators[index]);
-		while(prev != null) {
-			key = '${prev.title}/${key}';
-			prev = findPrevious(prev);
-		}
-
-		return 'seps/${key}';
-	}
-
-	function isSepHidden(index) {
-		return getDisplayState(getSeparatorKey(index)) == false;
-	}
-
-	function setSepHidden(sep : Separator, hidden : Bool) {
-		sep.hidden = hidden;
-		saveDisplayState(getSeparatorKey(sep.index), !hidden);
-	}
-
-	public function expandLine(line: Int) {
-		var sepIndex = -1;
-		for( i in 0...sheet.separators.length ) {
-			if( sheet.separators[i].index > line )
+	public function revealLine(line: Int) {
+		if (this.separators == null) return;
+		for (sIdx in 0...this.separators.length) {
+			if (this.separators[sIdx].data.index > line) {
+				if (sIdx - 1 >= 0)
+					this.separators[sIdx - 1].reveal();
 				break;
-			sepIndex = i;
-		}
-		if( sepIndex < 0 )
-			return;
-		var subs = element.find("tr.separator");
-		var t = makeSeparatorTree(sheet.separators[sepIndex]);
-
-		// We need to open the separators starting from the first parent, else the columns get duplicated
-		var reverseParentList = [];
-
-		while( t.parent != null ) {
-			reverseParentList.unshift(t);
-			t = t.parent;
-		}
-
-		for (t in reverseParentList) {
-			if( isSepHidden(t.index) )
-				new Element(subs.get(t.index)).find("a.toggle").click();
-		}
-	}
-
-	function makeSeparator( sindex : Int, colCount : Int ) : Separator {
-		var sep = J("<tr>").addClass("separator").attr("sindex", sindex).append(J('<td colspan="${colCount+1}"><a href="#" class="toggle"></a><span></span></td>'));
-		var content = sep.find("span");
-		var toggle = sep.find("a");
-		var sepInfo = sheet.separators[sindex];
-		var title = sepInfo.title;
-		if( title != null )
-			sep.addClass(StringTools.replace('separator-$title'.toLowerCase(), " ", "-"));
-
-		var data = { hidden : false, element : sep, toggle : toggle, index : sindex };
-
-		var curLevel = sepInfo.level;
-		if( curLevel == null ) curLevel = 0;
-
-		function getLines( ?filter ) {
-			var snext = 0, sref = -1, scur = -1;
-			var out = [];
-			for( i in 0...lines.length ) {
-				while( true ) {
-					var sep = sheet.separators[snext];
-					if( sep == null || sep.index != i ) break;
-					if( sep.title != null ) {
-						scur = snext;
-						if( sep.level == null || sep.level <= curLevel )
-							sref = snext;
-					}
-					snext++;
-				}
-				if( sref == sindex && (filter == null || scur == filter) )
-					out.push(lines[i]);
-			}
-			return out;
-		}
-
-		var syncLevel : Int = -1;
-		function sync() {
-			setSepHidden(data, title == null ? false : isSepHidden(sindex));
-			toggle.toggle(title != null);
-			toggle.text(data.hidden ? "🡆" : "🡇");
-			content.text(title == null ? "" : title+(data.hidden ? " ("+getLines().length+")" : ""));
-			sep.toggleClass("sep-hidden", data.hidden == true);
-			var def = #if js null #else 0 #end;
-			if( syncLevel != sepInfo.level ) {
-				sep.removeClass("seplevel-"+(syncLevel == def ? 0 : syncLevel));
-				syncLevel = sepInfo.level;
-				sep.addClass('seplevel-'+(syncLevel == def ? 0 : syncLevel));
-			}
-			sep.attr("level", syncLevel == def ? 0 : sepInfo.level);
-		}
-
-		sync();
-
-		// Separator hide itself if parent is hidden
-		var level = curLevel - 1;
-		while( level >= 0 ) {
-			for( i in 0...sindex ) {
-				var s = sheet.separators[sindex - 1 - i];
-				if( s.title != null && (s.level == null || s.level == level) ) {
-					if( isSepHidden(sindex - 1 - i) ) {
-						sep.hide();
-						setSepHidden(data, true);
-					}
-					break;
-				}
-			}
-			level--;
-		}
-
-		sep.contextmenu(function(e) {
-
-			var parents = [];
-			var minLevel = -1;
-			for( i in 0...sindex ) {
-				var sep = sheet.separators[sindex - 1 - i];
-				var level = sep.level == null ? 0 : sep.level;
-				if( minLevel < 0 || level < minLevel ) {
-					parents.unshift(sep);
-					minLevel = level;
-				}
-			}
-			parents.unshift(null);
-
-			var hasChildren = makeSeparatorTree(sepInfo).subs.length > 0;
-
-			function expand(show) {
-				var subs = element.find("tr.separator");
-				function showRec(t:SepTree) {
-					if( !show ) {
-						for( s in t.subs )
-							showRec(s);
-					}
-					if( isSepHidden(t.index) == show )
-						new Element(subs.get(t.index)).find("a.toggle").click();
-					if( show ) {
-						for( s in t.subs )
-							showRec(s);
-					}
-				}
-				showRec(makeSeparatorTree(sepInfo));
-			}
-
-			var opts : Array<hide.comp.ContextMenu.MenuItem> = [
-
-				{ label : "Expand", click : function() expand(true) },
-				{ label : "Collapse", click : function() expand(false) },
-				{
-					label : "Parent",
-					enabled : parents.length > 0,
-					menu : [for( s in parents ) {
-						var level = s == null ? 0 : s.level == null ? 1 : s.level + 1;
-						{
-							label : s == null ? "(None)" : [for( i in 0...level ) ""].join("  ")+s.title,
-							checked : s == null ? sepInfo.level == null : sepInfo.level == level,
-							click : function() {
-								editor.beginChanges();
-								var delta = level - (sepInfo.level == null ? 0 : sepInfo.level);
-								function deltaRec( t : SepTree ) {
-									var level = t.sep.level;
-									if( level == null ) level = 0;
-									level += delta;
-									if( level == 0 )
-										Reflect.deleteField(t.sep,"level")
-									else
-										t.sep.level = level;
-									for( s in t.subs )
-										deltaRec(s);
-								}
-								deltaRec(makeSeparatorTree(sepInfo));
-								editor.endChanges();
-								refresh();
-							},
-						}
-					}]
-				},
-				{ label : "", isSeparator : true },
-				{ label : "Expand All", click : function() {
-					element.find("tr.separator.sep-hidden a.toggle").click();
-				}},
-				{ label : "Collapse All", click : function() {
-					element.find("tr.separator").not(".sep-hidden").find("a.toggle").click();
-
-				}},
-				{ label : "Collapse Others", click : function() {
-					var directParents = [];
-					var t = makeSeparatorTree(sepInfo);
-					while (t != null && t.index >= 0) {
-						directParents.push(t.index);
-						t = t.parent;
-					}
-					var selector = element.find("tr.separator").not(".sep-hidden").not((_, e) -> directParents.contains(Std.parseInt(e.getAttribute("sindex"))));
-					selector.find("a.toggle").click();
-					if (sep.hasClass("sep-hidden"))
-						sep.find("a.toggle").click();
-				}},
-				{ label : "", isSeparator : true },
-				{ label : "Remove", enabled : !sheet.props.hide, click : function() {
-					editor.beginChanges();
-					sheet.separators.splice(sindex, 1);
-					editor.endChanges();
-					editor.refresh();
-				}}
-			];
-			#if js
-			if( sepInfo.path != null )
-				opts.unshift({
-					label : "Open",
-					click : function() {
-						ide.openFile(sepInfo.path);
-					},
-				});
-			#end
-			hide.comp.ContextMenu.createFromPoint(ide.mouseX, ide.mouseY, opts);
-		});
-
-		sep.dblclick(function(e) {
-			if( !canInsert() ) return;
-			content.empty();
-			J("<input>").appendTo(content).focus().val(title == null ? "" : title).blur(function(e) {
-				title = Element.getVal(e.getThis());
-				e.getThis().remove();
-				if( title == "" ) title = null;
-				editor.beginChanges();
-				var sep = sheet.separators[sindex];
-				var prevTitle = sep.title;
-				if( title == null )
-					Reflect.deleteField(sep,"title");
-				else
-					sep.title = title;
-				if( prevTitle != null ) {
-					if( title == null ) {
-						if( sep.level == null ) sep.level = 0;
-						sep.level++;
-					}
-				} else if( title != null && sep.level > 0 ) {
-					sep.level--;
-					if( sep.level == 0 )
-						Reflect.deleteField(sep,"level");
-				}
-				editor.endChanges();
-				sync();
-				var l = getLines();
-				if( l.length > 0 ) {
-					if( l[0].cells.length > 0 )
-						l[0].cells[0].focus();
-				}
-			}).keypress(function(e) {
-				e.stopPropagation();
-			}).keydown(function(e) {
-				if( e.keyCode == 13 ) { e.getThis().blur(); e.preventDefault(); } else if( e.keyCode == 27 ) content.text(title);
-				e.stopPropagation();
-			});
-		});
-
-		toggle.dblclick(function(e) e.stopPropagation());
-
-		toggle.click(function(e) {
-			setSepHidden(data, !data.hidden);
-			var hidden = data.hidden;
-			sync();
-
-			for( l in getLines( hidden ? null : sindex ) ) {
-				l.hide();
-				if( !hidden ) {
-					l.create();
-				}
-			}
-
-			var subs = element.find("tr.separator");
-			function toggleRec( t : SepTree ) {
-				var sid = sheet.separators.indexOf(t.sep);
-				subs.eq(sid).toggle(!hidden);
-				if( !hidden ) {
-					if( isSepHidden(sid) ) return;
-					for( l in getLines(sid) )
-						l.create();
-				}
-				for( s in t.subs )
-					toggleRec(s);
-			}
-			for( s in makeSeparatorTree(sepInfo).subs )
-				toggleRec(s);
-
-			editor.updateFilter();
-		});
-
-		return data;
-	}
-
-	public function showSeparator( line : Line ) {
-		if( separators == null ) return;
-
-		// Find which separators needs to be open to show this line
-		var sepIndexes = [];
-		for( i in 0...sheet.separators.length ) {
-			var s = sheet.separators[i];
-			if( s.index > line.index )
-				break;
-
-			if( s.level == null )
-				sepIndexes = [];
-
-			var pos = s.level != null ? s.level : 0;
-			sepIndexes[pos] = i;
-			sepIndexes = sepIndexes.slice(0, pos + 1);
-		}
-
-		// Open concerned separators
-		for( sepIdx in sepIndexes ) {
-			var sep = separators[sepIdx];
-			if( sep != null && sep.hidden ) {
-				sep.toggle.click();
 			}
 		}
 	}
@@ -810,7 +487,7 @@ class Table extends Component {
 
 			th.contextmenu(function(e) {
 				editor.popupColumn(this, c, cell);
-				editor.cursor.clickCell(cell, false);
+				editor.cursor.clickCell(cell, false, false);
 				e.preventDefault();
 			});
 		}
@@ -821,7 +498,7 @@ class Table extends Component {
 		// add/edit properties
 		var end = new Element("<tr>").appendTo(element);
 		end = new Element("<td>").attr("colspan", "2").appendTo(end);
-		var sel = new Element("<select class='insertField'>").appendTo(end);
+		var sel = new Element("<select class='insertField default-cursor'>").appendTo(end);
 		new Element("<option>").attr("value", "").text("--- Choose ---").appendTo(sel);
 		var canInsert = false;
 		available.sort((c1, c2) -> (c1.name > c2.name ? 1 : -1));
@@ -932,4 +609,118 @@ class Table extends Component {
 		return "Table#"+sheet.name;
 	}
 
+
+	public function insertLine(index : Int = 0) {
+		if( !canInsert() )
+			return;
+		if( displayMode == Properties ) {
+			var ins = element.find("select.insertField");
+			var options = [for( o in ins.find("option").elements() ) Element.getVal(o)];
+			ins.attr("size", options.length);
+			options.shift();
+			ins.focus();
+			var index = 0;
+			ins.val(options[0]);
+			ins.off();
+			ins.blur(function(_) refresh());
+			ins.keydown(function(e) {
+				switch (e.keyCode) {
+					case hxd.Key.ESCAPE:
+						element.focus();
+					case hxd.Key.UP if( index > 0 ):
+						ins.val(options[--index]);
+					case hxd.Key.DOWN if( index < options.length - 1 ):
+						ins.val(options[++index]);
+					case hxd.Key.ENTER:
+						insertProperty(Element.getVal(ins));
+					default:
+				}
+				e.stopPropagation();
+				e.preventDefault();
+			});
+			return;
+		}
+		editor.beginChanges();
+		sheet.newLine(index);
+		refreshCellValue();
+		editor.endChanges();
+		refresh();
+	}
+
+	public function moveLines(lines : Array<Line>, delta : Int) {
+		if( !canInsert() )
+			return;
+
+		editor.beginChanges();
+
+		lines.sort((a, b) -> { return (a.index - b.index) * delta * -1; });
+
+		var range = { min: 100000, max: 0 };
+		var distance = Std.int(hxd.Math.abs(delta));
+		var newIdx = 0;
+		for (l in lines ) {
+			newIdx = l.index;
+			for( _ in 0...distance ) {
+				newIdx = sheet.moveLine(newIdx, delta);
+				if( newIdx == null )
+					break;
+			}
+
+			if (range.min > newIdx) range.min = newIdx;
+			if (range.max < newIdx) range.max = newIdx;
+		}
+
+		editor.endChanges();
+
+		// Set cursor and selection on moved lines
+		editor.cursor.set(this, editor.cursor.x, range.min, [{ x1: -1, y1: range.min, x2: -1, y2: range.max }]);
+
+		editor.refresh();
+	}
+
+	public function moveLinesTo(lines : Array<Line>, targetIdx : Int) {
+		var fromIdx = lines[0].index;
+		for (l in lines)
+			if (l.index < fromIdx)
+				fromIdx = l.index;
+
+		var movingUp = fromIdx > targetIdx;
+		var sepCount = 0;
+		for (s in separators) {
+			if ((movingUp && s.data.index > targetIdx && s.data.index <= fromIdx) || (!movingUp && s.data.index <= targetIdx && s.data.index > fromIdx))
+				sepCount++;
+		}
+
+		moveLines(lines, movingUp ? (targetIdx - fromIdx) - sepCount : (targetIdx - fromIdx) + sepCount);
+
+		// Set cursor and selection on moved lines
+		editor.cursor.set(this, editor.cursor.x, targetIdx, [{ x1: -1, y1: targetIdx, x2: -1, y2: targetIdx + (lines.length - 1) }]);
+	}
+
+	public function duplicateLine(index : Int = 0) {
+		if( !canInsert() || displayMode != Table )
+			return;
+		var srcObj = sheet.lines[index];
+		editor.beginChanges();
+		var obj = sheet.newLine(index);
+		refreshCellValue();
+		for(colId => c in columns ) {
+			var val = Reflect.field(srcObj, c.name);
+			if( val != null ) {
+				if( c.type != TId ) {
+					// Deep copy
+					Reflect.setField(obj, c.name, haxe.Json.parse(haxe.Json.stringify(val)));
+				} else {
+					// Increment the number at the end of the id if there is one
+					var newId = editor.getNewUniqueId(val, this, c);
+					if (newId != null) {
+						Reflect.setField(obj, c.name, newId);
+					}
+				}
+			}
+		}
+		editor.endChanges();
+		refresh();
+		getRealSheet().sync();
+	}
 }

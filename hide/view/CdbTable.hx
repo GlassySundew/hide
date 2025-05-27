@@ -44,11 +44,11 @@ class CdbTable extends hide.ui.View<{}> {
 			return;
 		}
 
-		if (tabs.currentTab.get(0) != tabContents[index].parent().get(0)) {
-			@:privateAccess editor.currentFilters = [];
+		if (tabs.currentTab.get(0) != tabContents[index].parent().get(0))
 			tabs.currentTab = tabContents[index].parent();
-		}
-		editor.setFilter(null);
+
+		@:privateAccess editor.filters = [];
+		@:privateAccess editor.updateFilters();
 		var curTable = @:privateAccess editor.tables[0];
 		var lastCell = null;
 		for (i => part in path) {
@@ -102,7 +102,10 @@ class CdbTable extends hide.ui.View<{}> {
 						if (scr != null) {
 							haxe.Timer.delay(function() {
 								@:privateAccess scr.script.editor.setPosition({column:0, lineNumber: line+1});
-								haxe.Timer.delay(() ->@:privateAccess scr.script.editor.revealLineInCenter(line+1), 1);
+								haxe.Timer.delay(function() {
+									scr.setCursor();
+									@:privateAccess scr.script.editor.revealLineInCenter(line+1);
+								}, 1);
 							}, 1);
 						}
 						#end
@@ -111,15 +114,11 @@ class CdbTable extends hide.ui.View<{}> {
 					lineNo = -1;
 			}
 
-			if (i == path.length-1) {
-				editor.pushCursorState();
-			}
-			trace(i, colNo, lineNo);
 			if (colNo >= 0 && lineNo >= 0) {
-				editor.cursor.set(curTable, colNo, lineNo, i == path.length-1);
+				editor.cursor.set(curTable, colNo, lineNo, i == path.length-1, true);
 				lastCell = editor.cursor.getCell();
 				if( editor.cursor.table != null) {
-					editor.cursor.table.expandLine(lineNo);
+					editor.cursor.table.revealLine(lineNo);
 					if (i < path.length-1) {
 						var sub = editor.cursor.getLine().subTable;
 						var cell = editor.cursor.getCell();
@@ -139,27 +138,6 @@ class CdbTable extends hide.ui.View<{}> {
 			editor.focus();
 			editor.cursor.update();
 		}, 1);
-		/*for (i in 0...coords.length) {
-			var c = coords[i];
-			editor.cursor.set(curTable, c.column, c.line);
-			if( editor.cursor.table != null && c.line != null ) {
-				editor.cursor.table.expandLine(c.line);
-				if (i < coords.length - 1) {
-					var sub = editor.cursor.getLine().subTable;
-					var cell = editor.cursor.getCell();
-					if (sub != null && sub.cell == cell) {
-						curTable = sub;
-					}
-					else {
-						cell.open(false);
-						curTable = editor.cursor.table;
-					}
-				}
-			}
-			else
-				break;
-		}*/
-
 	}
 
 	public function goto( s : cdb.Sheet, ?line : Int, ?column : Int, ?scriptLine : Int ) {
@@ -173,14 +151,14 @@ class CdbTable extends hide.ui.View<{}> {
 			return;
 		}
 
-		@:privateAccess editor.currentFilters = [];
 		tabs.currentTab = tabContents[index].parent();
-		editor.setFilter(null);
+		@:privateAccess editor.filters = [];
+		@:privateAccess editor.updateFilters();
 		if( line != null ) {
 			if( column != null )
-				editor.cursor.setDefault(line, column);
+				editor.cursor.setDefault(@:privateAccess editor.tables[0], column, line);
 			if( editor.cursor.table != null )
-				editor.cursor.table.expandLine(line);
+				editor.cursor.table.revealLine(line);
 			if (scriptLine != null) {
 				var cell = editor.cursor.getCell();
 				if (cell != null) {
@@ -221,7 +199,6 @@ class CdbTable extends hide.ui.View<{}> {
 
 	function setEditor(index:Int) {
 		var sheets = getSheets();
-		editor.pushCursorState();
 		editor.show(sheets[index],tabContents[index]);
 		currentSheet = editor.getCurrentSheet();
 		ide.currentConfig.set("cdb.currentSheet", sheets[index].name);
@@ -329,7 +306,7 @@ class CdbTable extends hide.ui.View<{}> {
 	}
 
 	#if js
-	override public function onDragDrop( items : Array<String>, isDrop : Bool ) {
+	override public function onDragDrop( items : Array<String>, isDrop : Bool, event: js.html.DragEvent) {
 		if( items.length == 0 )
 			return false;
 		var path = ide.makeRelative(items[0]);

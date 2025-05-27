@@ -220,44 +220,50 @@ class Scene extends hide.comp.Component implements h3d.IDrawable {
 		return js.Browser.document.activeElement == canvas;
 	}
 
-	function sync() {
-		errorThisFrame = false;
-		try {
-			if( new Element(canvas).parents("html").length == 0) {
-				if (autoDisposeOutOfDocument) {
-					dispose();
-				}
-				return;
+	function doSync() {
+		if( new Element(canvas).parents("html").length == 0) {
+			if (autoDisposeOutOfDocument) {
+				dispose();
 			}
-			if( !visible || pendingCount > 0)
-				return;
-			var dt = hxd.Timer.tmod * speed / 60;
-			if( !Ide.inst.isFocused ) {
-				// refresh at 1FPS
-				unFocusedTime += dt;
-				if( unFocusedTime < 1 ) return;
-				unFocusedTime -= 1;
-				dt = 1;
-			} else
-				unFocusedTime = 0;
-			setCurrent();
-			sevents.checkEvents();
-			s2d.setElapsedTime(dt);
-			s3d.setElapsedTime(dt);
-			for( f in listeners )
-				f(dt);
-			onUpdate(dt);
-			engine.render(this);
+			return;
 		}
-		catch (e:haxe.Exception) {
-			var e = errorHandler(e);
-			if (e != null) {
-				throw e;
-			}
-		}
+		if( !visible || pendingCount > 0)
+			return;
+		var dt = hxd.Timer.tmod * speed / 60;
+		if( !Ide.inst.isFocused ) {
+			// refresh at 1FPS
+			unFocusedTime += dt;
+			if( unFocusedTime < 1 ) return;
+			unFocusedTime -= 1;
+			dt = 1;
+		} else
+			unFocusedTime = 0;
+		setCurrent();
+		sevents.checkEvents();
+		s2d.setElapsedTime(dt);
+		s3d.setElapsedTime(dt);
+		for( f in listeners )
+			f(dt);
+		onUpdate(dt);
+		engine.render(this);
+	}
 
-		if (!errorThisFrame) {
-			clearErrorMessage();
+	function sync() {
+		if ( ide.isDebugger )
+			doSync();
+		else {
+			errorThisFrame = false;
+			try {
+				doSync();
+			} catch (e:haxe.Exception) {
+				var e = errorHandler(e);
+				if (e != null) {
+					throw e;
+				}
+			}
+			if (!errorThisFrame) {
+				clearErrorMessage();
+			}
 		}
 	}
 
@@ -364,16 +370,25 @@ class Scene extends hide.comp.Component implements h3d.IDrawable {
 			dirs.unshift(haxe.io.Path.join([ide.resourceDir, path]));
 		}
 
+		function loadAnims( path : String, rec : Bool ) {
+			for( f in try sys.FileSystem.readDirectory(path) catch( e : Dynamic ) [] ) {
+				var file = f.toLowerCase();
+				var filePath = path+"/"+f;
+				if( StringTools.startsWith(f,"Anim_") && (StringTools.endsWith(file,".hmd") || StringTools.endsWith(file,".fbx")) )
+					anims.push(filePath);
+				if (customFilter != null && customFilter(f))
+					anims.push(filePath);
+				if( rec && sys.FileSystem.isDirectory(ide.getPath(filePath)) )
+					loadAnims(filePath, rec);
+			}
+		}
+
 		for( dir in dirs ) {
 			var dir = dir;
+			var recursive = StringTools.endsWith(dir, "*");
+			if( recursive ) dir = dir.substr(0,-1);
 			if( StringTools.endsWith(dir, "/") ) dir = dir.substr(0,-1);
-			for( f in try sys.FileSystem.readDirectory(dir) catch( e : Dynamic ) [] ) {
-				var file = f.toLowerCase();
-				if( StringTools.startsWith(f,"Anim_") && (StringTools.endsWith(file,".hmd") || StringTools.endsWith(file,".fbx")) )
-					anims.push(dir+"/"+f);
-				if (customFilter != null && customFilter(f))
-					anims.push(dir+"/"+f);
-			}
+			loadAnims(dir, recursive);
 		}
 		return anims;
 	}
@@ -594,7 +609,8 @@ class Scene extends hide.comp.Component implements h3d.IDrawable {
 				renderProps.applyProps(s3d.renderer);
 
 			for (light in currentRenderProps.refInstance.findAll(hrt.prefab.Light, true)) {
-				@:privateAccess light.icon.visible = false;
+				if (@:privateAccess light.icon != null)
+					@:privateAccess light.icon.visible = false;
 			}
 		}
 	}

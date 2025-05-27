@@ -12,7 +12,7 @@
   cursor: pointer;
 }
 .refviewer a:hover {
-  color: #4772b3;
+  color: #2c5d87;
 }
 .cdb-view.cdb-diff .cdb-sheet th,
 .cdb-view.cdb-diff th.start {
@@ -24,25 +24,51 @@
 .cdb:focus {
   outline: none;
 }
-.cdb:focus .cdb-sheet td.cursorView {
-  outline: 1px solid #ccc;
+.cdb .cdb-sheet td.cursorView {
+  border: 2px solid #ccc !important;
 }
-.cdb:focus .cdb-sheet tr.cursorLine {
-  background-color: #262d35;
+.cdb .cdb-sheet th.highlight {
+  background-color: #1c3c70;
 }
-.cdb:focus .cdb-sheet tr.cursorLine td.start,
-.cdb:focus .cdb-sheet tr.cursorLine td.t_readonly {
+.cdb .cdb-sheet .highlight td.start,
+.cdb .cdb-sheet .highlightth {
+  background-color: #1c3c70;
+}
+.cdb .cdb-sheet .active-line {
+  background-color: #1f1e1e;
+}
+.cdb .cdb-sheet tr.selected,
+.cdb .cdb-sheet td.selected {
   background-color: #313a48;
 }
-.cdb:focus .cdb-sheet tr.selected,
-.cdb:focus .cdb-sheet td.selected {
-  background-color: #313a48;
+.cdb .cdb-sheet tr.selected.top td.start,
+.cdb .cdb-sheet td.selected.top td.start {
+  border-top: 1px solid #ccc;
 }
-.cdb:focus .cdb-sheet tr.selected td.start,
-.cdb:focus .cdb-sheet td.selected td.start,
-.cdb:focus .cdb-sheet tr.selected td.t_readonly,
-.cdb:focus .cdb-sheet td.selected td.t_readonly {
-  background-color: #313a48;
+.cdb .cdb-sheet tr.selected.bot td.start,
+.cdb .cdb-sheet td.selected.bot td.start {
+  border-bottom: 1px solid #ccc;
+}
+.cdb .cdb-sheet tr.selected td.start,
+.cdb .cdb-sheet td.selected td.start,
+.cdb .cdb-sheet tr.selected td.t_readonly,
+.cdb .cdb-sheet td.selected td.t_readonly {
+  border-left: 1px solid #ccc;
+  border-right: 1px solid #ccc;
+  color: #aaaaaa;
+  background-color: #0b57d0;
+}
+.cdb .cdb-sheet td.selected.top {
+  border-top: 1px solid #ccc;
+}
+.cdb .cdb-sheet td.selected.right {
+  border-right: 1px solid #ccc;
+}
+.cdb .cdb-sheet td.selected.bot {
+  border-bottom: 1px solid #ccc;
+}
+.cdb .cdb-sheet td.selected.left {
+  border-left: 1px solid #ccc;
 }
 .cdb .cdb-sheet {
   width: 100%;
@@ -167,7 +193,8 @@
   padding-bottom: 0px;
 }
 .cdb .cdb-sheet tr.filtered,
-.cdb .cdb-sheet tr.hidden {
+.cdb .cdb-sheet tr.hidden,
+.cdb .cdb-sheet tr.sep-hidden {
   display: none;
 }
 .cdb .cdb-sheet tr.clickable {

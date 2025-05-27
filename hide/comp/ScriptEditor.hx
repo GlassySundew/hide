@@ -8,6 +8,7 @@ typedef GlobalsDef = haxe.DynamicAccess<{
 	var evalTo : String;
 	var allowGlobalsDefine : Null<Bool>;
 	var cdbEnums : Array<String>;
+	var publicFields : Bool;
 }>;
 
 class ScriptCache {
@@ -43,7 +44,12 @@ class ScriptCache {
 				var path = ide.getPath(f);
 				var content = try sys.io.File.getContent(path) catch( e : Dynamic ) { @:privateAccess ScriptChecker.error(""+e); continue; };
 				types.addXmlApi(Xml.parse(content).firstElement());
-				ide.fileWatcher.register(f, function() { onApiFileChange(); loadFiles(files); });
+				ide.fileWatcher.register(f, function() {
+					haxe.Timer.delay(() -> {
+						onApiFileChange();
+						loadFiles(files);
+					}, 100);
+				});
 			}
 		}
 	}
@@ -150,6 +156,7 @@ class ScriptChecker {
 	public var constants : Map<String,Dynamic>;
 	public var evalTo : String;
 	public var checker(default,null) : hscript.Checker;
+	public var cdbEnums : Array<String>;
 	var initDone = false;
 	var apiHash : String;
 
@@ -220,8 +227,10 @@ class ScriptChecker {
 
 		var cdbPack : String = config.get("script.cdbPackage");
 		var contexts = [];
+		var publicFields = false;
 		var allowGlobalsDefine = false;
 		checkEvents = false;
+		cdbEnums = [];
 
 		for( api in apis ) {
 			for( f in api.globals.keys() ) {
@@ -263,11 +272,15 @@ class ScriptChecker {
 				checker.setGlobal(f, t);
 			}
 
-			if( api.context != null )
+			if( api.context != null ) {
 				contexts = [api.context];
+				publicFields = api.publicFields;
+			}
 
-			if( api.contexts != null )
+			if( api.contexts != null ) {
 				contexts = api.contexts;
+				publicFields = api.publicFields;
+			}
 
 			if( api.allowGlobalsDefine != null )
 				allowGlobalsDefine = api.allowGlobalsDefine;
@@ -295,7 +308,9 @@ class ScriptChecker {
 				case TInst(c,_):
 					var cc = c;
 					while( true ) {
-						for( f in cc.fields ) if( f.t.match(TFun(_)) ) f.isPublic = true; // allow access to private methods
+						if( !publicFields ) {
+							for( f in cc.fields ) if( f.t.match(TFun(_)) ) f.isPublic = true; // allow access to private methods
+						}
 						if( cc.superClass == null ) break;
 						cc = switch( cc.superClass ) {
 						case TInst(c,_): c;
@@ -371,6 +386,9 @@ class ScriptChecker {
 				cl.fields.set(id, { name : id, params : [], canWrite : false, t : kind, isPublic: true, complete : true });
 			}
 			checker.setGlobal(name, TInst(cl,[]));
+			if (cdbEnums == null)
+				cdbEnums = [];
+			cdbEnums.push(name);
 			return kind;
 		}
 		return null;
