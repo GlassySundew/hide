@@ -200,14 +200,6 @@ class Instance extends Object3D {
 		return path;
 	}
 
-	override function editorRemoveInstance() : Void {
-		super.editorRemoveInstance();
-		if ( local3d == null ) return;
-		if ( icon != null ) {
-			icon.remove();
-		}
-	}
-
 	override function dispose() {
 		super.dispose();
 		model?.remove();

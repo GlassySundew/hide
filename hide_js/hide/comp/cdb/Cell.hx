@@ -1714,6 +1714,9 @@ class Cell {
 			var d = ctElement.find("#dropdown-custom-type");
 			var paramsContent = ctElement.find("#parameters");
 
+			if(ctValue == null)
+				return;
+			
 			var newCtValue : Array<Dynamic> = null;
 
 			var selected = typeDropdown.val() != null ? customType.cases[typeDropdown.val()] : null;
