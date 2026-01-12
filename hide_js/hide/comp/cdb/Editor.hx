@@ -2494,8 +2494,11 @@ class Editor extends Component {
 		sheet.rename(name);
 		base.mapType(function(t) {
 			return switch( t ) {
-			case TRef(o) if( o == old ):
-				TRef(name);
+			case TRef(o) if( o == old || StringTools.startsWith(o, old + "@") ):
+				if(o == old)
+					TRef(name);
+				else 
+					TRef(StringTools.replace(o, old, name));
 			case TLayer(o) if( o == old ):
 				TLayer(name);
 			default:
